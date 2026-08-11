@@ -50,12 +50,37 @@ void onWhisperProgress(struct whisper_context * /*ctx*/, struct whisper_state * 
     }
 }
 
+// Same single-thread/single-call lifetime reasoning as ProgressCallbackContext above.
+struct SegmentCallbackContext {
+    JNIEnv *env;
+    jobject listener;
+    jmethodID onSegmentMethod;
+};
+
+void onWhisperNewSegment(struct whisper_context *ctx, struct whisper_state * /*state*/, int n_new, void *userData) {
+    auto *context = static_cast<SegmentCallbackContext *>(userData);
+    if (context == nullptr || context->listener == nullptr || n_new <= 0) {
+        return;
+    }
+    const int totalSegments = whisper_full_n_segments(ctx);
+    for (int i = totalSegments - n_new; i < totalSegments; ++i) {
+        const char *text = whisper_full_get_segment_text(ctx, i);
+        if (text == nullptr) {
+            continue;
+        }
+        jstring jtext = context->env->NewStringUTF(text);
+        context->env->CallVoidMethod(context->listener, context->onSegmentMethod, jtext);
+        context->env->DeleteLocalRef(jtext);
+    }
+}
+
 } // namespace
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_whispertranscriber_app_WhisperLib_transcribe(JNIEnv *env, jclass /*clazz*/, jlong contextPtr,
                                                        jint numThreads, jfloatArray audioData,
-                                                       jstring language, jobject progressListener) {
+                                                       jstring language, jobject progressListener,
+                                                       jobject segmentListener) {
     if (contextPtr == 0) {
         return env->NewStringUTF("");
     }
@@ -83,6 +108,16 @@ Java_com_whispertranscriber_app_WhisperLib_transcribe(JNIEnv *env, jclass /*claz
         progressContext.onProgressMethod = env->GetMethodID(listenerClass, "onProgress", "(I)V");
         params.progress_callback = onWhisperProgress;
         params.progress_callback_user_data = &progressContext;
+    }
+
+    SegmentCallbackContext segmentContext{};
+    if (segmentListener != nullptr) {
+        jclass listenerClass = env->GetObjectClass(segmentListener);
+        segmentContext.env = env;
+        segmentContext.listener = segmentListener;
+        segmentContext.onSegmentMethod = env->GetMethodID(listenerClass, "onSegment", "(Ljava/lang/String;)V");
+        params.new_segment_callback = onWhisperNewSegment;
+        params.new_segment_callback_user_data = &segmentContext;
     }
 
     int result = whisper_full(ctx, params, samples, numSamples);

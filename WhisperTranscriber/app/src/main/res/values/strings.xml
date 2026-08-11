@@ -7,6 +7,8 @@
     <string name="delete_model">Delete model</string>
     <string name="download_complete">Model downloaded.</string>
     <string name="download_failed">Download failed. Check your connection and try again.</string>
+    <string name="downloading_model_notification">Downloading %1$s</string>
+    <string name="download_notification_channel_name">Model downloads</string>
 
     <string name="source_label">2. Choose input</string>
     <string name="mode_file">File</string>

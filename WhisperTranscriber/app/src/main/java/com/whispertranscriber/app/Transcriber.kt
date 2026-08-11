@@ -11,11 +11,17 @@ class Transcriber(modelPath: String) : Closeable {
         check(contextPtr != 0L) { "Failed to load Whisper model from $modelPath" }
     }
 
-    fun transcribe(samples: FloatArray, language: String = "auto", onProgress: ((Int) -> Unit)? = null): String {
+    fun transcribe(
+        samples: FloatArray,
+        language: String = "auto",
+        onProgress: ((Int) -> Unit)? = null,
+        onSegment: ((String) -> Unit)? = null
+    ): String {
         check(contextPtr != 0L) { "Transcriber already closed" }
         val threads = Runtime.getRuntime().availableProcessors().coerceIn(1, 8)
-        val listener = onProgress?.let { callback -> WhisperProgressListener { percent -> callback(percent) } }
-        return WhisperLib.transcribe(contextPtr, threads, samples, language, listener)
+        val progressListener = onProgress?.let { callback -> WhisperProgressListener { percent -> callback(percent) } }
+        val segmentListener = onSegment?.let { callback -> WhisperSegmentListener { text -> callback(text) } }
+        return WhisperLib.transcribe(contextPtr, threads, samples, language, progressListener, segmentListener)
     }
 
     override fun close() {

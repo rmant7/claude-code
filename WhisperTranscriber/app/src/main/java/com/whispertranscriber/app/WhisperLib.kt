@@ -5,6 +5,11 @@ fun interface WhisperProgressListener {
     fun onProgress(percent: Int)
 }
 
+/** Invoked from native code each time whisper.cpp finalizes one or more new transcript segments. */
+fun interface WhisperSegmentListener {
+    fun onSegment(text: String)
+}
+
 /** Thin JNI bridge to the native whisper.cpp library (see src/main/cpp/whisper_jni.cpp). */
 object WhisperLib {
 
@@ -24,6 +29,7 @@ object WhisperLib {
         numThreads: Int,
         audioData: FloatArray,
         language: String,
-        progressListener: WhisperProgressListener?
+        progressListener: WhisperProgressListener?,
+        segmentListener: WhisperSegmentListener?
     ): String
 }

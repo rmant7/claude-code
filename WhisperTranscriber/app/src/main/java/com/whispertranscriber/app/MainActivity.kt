@@ -1,10 +1,13 @@
 package com.whispertranscriber.app
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -15,11 +18,17 @@ import android.widget.RadioGroup
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.documentfile.provider.DocumentFile
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.whispertranscriber.app.databinding.ActivityMainBinding
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -61,6 +70,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* download proceeds either way */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -71,6 +83,7 @@ class MainActivity : AppCompatActivity() {
         setUpModelSpinner()
         setUpSourceModeSwitcher()
         setUpResultsList()
+        observeDownloadState()
 
         binding.downloadButton.setOnClickListener { startModelDownload() }
         binding.deleteButton.setOnClickListener {
@@ -129,6 +142,39 @@ class MainActivity : AppCompatActivity() {
         binding.resultsRecyclerView.adapter = resultsAdapter
     }
 
+    /** Reflects [ModelDownloadService]'s progress, which keeps running while this Activity is gone. */
+    private fun observeDownloadState() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                ModelDownloadState.status.collect { status ->
+                    when (status) {
+                        is ModelDownloadState.Status.Downloading -> {
+                            binding.downloadButton.isEnabled = false
+                            binding.downloadProgressBar.visibility = View.VISIBLE
+                            binding.downloadProgressBar.progress = status.percent
+                        }
+
+                        is ModelDownloadState.Status.Completed -> {
+                            binding.downloadProgressBar.visibility = View.GONE
+                            refreshModelStatus()
+                            Toast.makeText(this@MainActivity, R.string.download_complete, Toast.LENGTH_SHORT).show()
+                        }
+
+                        is ModelDownloadState.Status.Failed -> {
+                            binding.downloadProgressBar.visibility = View.GONE
+                            refreshModelStatus()
+                            Toast.makeText(this@MainActivity, R.string.download_failed, Toast.LENGTH_LONG).show()
+                        }
+
+                        ModelDownloadState.Status.Idle -> {
+                            binding.downloadProgressBar.visibility = View.GONE
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private fun refreshModelStatus() {
         val downloaded = modelManager.isDownloaded(selectedModel)
         binding.modelStatusText.text = getString(
@@ -151,39 +197,18 @@ class MainActivity : AppCompatActivity() {
 
     private fun startModelDownload() {
         val model = selectedModel
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+
         binding.downloadButton.isEnabled = false
         binding.downloadProgressBar.visibility = View.VISIBLE
         binding.downloadProgressBar.progress = 0
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                var lastPercent = -1
-                modelManager.downloadModel(model) { progress ->
-                    val percent = if (progress.bytesTotal > 0) {
-                        ((progress.bytesDownloaded * 100) / progress.bytesTotal).toInt()
-                    } else {
-                        0
-                    }
-                    if (percent != lastPercent) {
-                        lastPercent = percent
-                        runOnUiThread { binding.downloadProgressBar.progress = percent }
-                    }
-                }
-
-                withContext(Dispatchers.Main) {
-                    binding.downloadProgressBar.visibility = View.GONE
-                    refreshModelStatus()
-                    Toast.makeText(this@MainActivity, R.string.download_complete, Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: Exception) {
-                modelManager.deleteModel(model)
-                withContext(Dispatchers.Main) {
-                    binding.downloadProgressBar.visibility = View.GONE
-                    binding.downloadButton.isEnabled = true
-                    Toast.makeText(this@MainActivity, R.string.download_failed, Toast.LENGTH_LONG).show()
-                }
-            }
-        }
+        ModelDownloadService.start(applicationContext, model)
     }
 
     private fun onTranscribeClicked() {
@@ -224,39 +249,35 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch(Dispatchers.Default) {
             try {
                 Transcriber(modelFile.absolutePath).use { transcriber ->
+                    // Decoding (MediaCodec) is normally much faster than whisper.cpp inference,
+                    // so a one-file lookahead is enough to fully hide decode latency for every
+                    // file but the first: while file N is being transcribed, file N+1's audio is
+                    // already being decoded in the background instead of only starting afterwards.
+                    var pendingDecode: Deferred<Result<FloatArray>>? = decodeAsync(this, 0)
+
                     for ((index, result) in results.withIndex()) {
                         withContext(Dispatchers.Main) {
                             binding.batchProgressText.text = getString(R.string.batch_progress, index + 1, total)
                             binding.transcribeProgressBar.progress = (index * 100) / total
                         }
 
-                        try {
-                            val samples = when (val source = result.source) {
-                                is MediaSource.LocalFile -> {
-                                    setStatus(result, TranscriptionResult.Status.DECODING)
-                                    AudioDecoder.decodeToPcm16k(applicationContext, source.uri) { percent ->
-                                        reportProgress(result, percent)
-                                    }
-                                }
+                        val decodeResult = pendingDecode?.await()
+                        pendingDecode = decodeAsync(this, index + 1)
 
-                                is MediaSource.RemoteUrl -> {
-                                    setStatus(result, TranscriptionResult.Status.DOWNLOADING)
-                                    val file = UrlDownloader.download(applicationContext, source.url)
-                                    try {
-                                        setStatus(result, TranscriptionResult.Status.DECODING)
-                                        AudioDecoder.decodeFromPath(file.absolutePath) { percent ->
-                                            reportProgress(result, percent)
-                                        }
-                                    } finally {
-                                        file.delete()
-                                    }
-                                }
-                            }
+                        try {
+                            val samples = checkNotNull(decodeResult).getOrThrow()
 
                             setStatus(result, TranscriptionResult.Status.TRANSCRIBING)
-                            result.text = transcriber.transcribe(samples, onProgress = { percent ->
-                                reportProgress(result, percent)
-                            }).trim()
+                            result.text = ""
+                            val transcript = transcriber.transcribe(
+                                samples,
+                                onProgress = { percent -> reportProgress(result, percent) },
+                                onSegment = { segmentText ->
+                                    result.text += segmentText
+                                    runOnUiThread { resultsAdapter.notifyDataSetChanged() }
+                                }
+                            ).trim()
+                            result.text = transcript
                             setStatus(result, TranscriptionResult.Status.DONE)
                         } catch (e: Exception) {
                             result.error = e.message ?: e.javaClass.simpleName
@@ -287,6 +308,37 @@ class MainActivity : AppCompatActivity() {
                 val anyDone = results.any { it.status == TranscriptionResult.Status.DONE }
                 binding.copyAllButton.isEnabled = anyDone
                 binding.shareAllButton.isEnabled = anyDone
+            }
+        }
+    }
+
+    /** Launches decoding of results[index] in the background, or null if there's no such item. */
+    private fun decodeAsync(scope: CoroutineScope, index: Int): Deferred<Result<FloatArray>>? {
+        if (index !in results.indices) return null
+        val result = results[index]
+        return scope.async(Dispatchers.Default) { runCatching { decodeSource(result) } }
+    }
+
+    private suspend fun decodeSource(result: TranscriptionResult): FloatArray {
+        return when (val source = result.source) {
+            is MediaSource.LocalFile -> {
+                setStatus(result, TranscriptionResult.Status.DECODING)
+                AudioDecoder.decodeToPcm16k(applicationContext, source.uri) { percent ->
+                    reportProgress(result, percent)
+                }
+            }
+
+            is MediaSource.RemoteUrl -> {
+                setStatus(result, TranscriptionResult.Status.DOWNLOADING)
+                val file = UrlDownloader.download(applicationContext, source.url)
+                try {
+                    setStatus(result, TranscriptionResult.Status.DECODING)
+                    AudioDecoder.decodeFromPath(file.absolutePath) { percent ->
+                        reportProgress(result, percent)
+                    }
+                } finally {
+                    file.delete()
+                }
             }
         }
     }
