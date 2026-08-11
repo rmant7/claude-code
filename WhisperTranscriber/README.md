@@ -10,10 +10,12 @@ model size and download it on demand from Hugging Face the first time you need i
    (~1.6 GB) — and tap **Download model**. The file is streamed from `https://huggingface.co/ggerganov/whisper.cpp`
    directly by the app (not via Android's system `DownloadManager` — that was found to sometimes report success on
    a truncated file on some OEM ROMs) into a `.part` temp file, verified against the expected byte count, and only
-   then promoted to its final name. It lands in the app's private external storage
-   (`Android/data/com.whispertranscriber.app/files/models`), so no storage permission is required. If a model ever
-   fails to load (e.g. an interrupted download), the app deletes the bad file automatically so you can just tap
-   **Download model** again.
+   then promoted to its final name. Downloads are **resumable**: a dropped connection (common on large multi-hundred-
+   MB/GB models over flaky mobile networks) picks back up from where the `.part` file left off via an HTTP `Range`
+   request, retrying with backoff for as long as each attempt keeps making forward progress. It lands in the app's
+   private external storage (`Android/data/com.whispertranscriber.app/files/models`), so no storage permission is
+   required. If a model ever fails to load (e.g. a download that never fully completed), the app deletes the bad
+   file automatically so you can just tap **Download model** again.
 2. **Choose an input source**:
    - **File** — pick a single audio/video file with the system file picker.
    - **URL** — paste a direct link to a remote audio/video file; the app downloads it to a temp file first.
@@ -26,15 +28,18 @@ model size and download it on demand from Hugging Face the first time you need i
    - Downmixes to mono and resamples to 16 kHz, the format whisper.cpp expects.
    - Runs inference on-device through a small JNI bridge (`app/src/main/cpp/whisper_jni.cpp`) around whisper.cpp's C
      API. The model is loaded once and reused across every file in a batch.
-4. Each result appears as its own card (filename, status, transcript) as soon as it's ready; **Copy all** / **Share
+4. Progress is visible at two levels: an overall "File *N* of *M*" bar for the batch, and a live percentage on the
+   card of whichever file is actively being processed — decode progress is derived from the container's reported
+   duration, and transcription progress comes straight from whisper.cpp's own `progress_callback`.
+5. Each result appears as its own card (filename, status, transcript) as soon as it's ready; **Copy all** / **Share
    all** combine every finished transcript into one block of text.
 
 ## Project layout
 
 - `app/src/main/java/com/whispertranscriber/app/`
   - `MainActivity.kt` — UI and orchestration across the File / URL / Folder modes.
-  - `ModelManager.kt` — Whisper model download/storage; streams to a temp file and verifies completeness before
-    promoting it, so a dropped connection never leaves a corrupt "downloaded" model behind.
+  - `ModelManager.kt` — Whisper model download/storage; streams to a temp file, resumes via HTTP `Range` requests
+    after a dropped connection, and only promotes the file once its full size is verified.
   - `UrlDownloader.kt` — streams a remote URL to a temp file for the URL mode.
   - `MediaFileUtils.kt` — recognizes media file extensions and recursively scans a picked folder.
   - `AudioDecoder.kt` — audio/video → 16 kHz mono float PCM decoding.

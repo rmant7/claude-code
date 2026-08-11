@@ -215,17 +215,28 @@ class MainActivity : AppCompatActivity() {
         binding.copyAllButton.isEnabled = false
         binding.shareAllButton.isEnabled = false
         binding.transcribeButton.isEnabled = false
+        binding.batchProgressText.visibility = View.VISIBLE
         binding.transcribeProgressBar.visibility = View.VISIBLE
+        binding.transcribeProgressBar.progress = 0
+
+        val total = results.size
 
         lifecycleScope.launch(Dispatchers.Default) {
             try {
                 Transcriber(modelFile.absolutePath).use { transcriber ->
-                    for (result in results) {
+                    for ((index, result) in results.withIndex()) {
+                        withContext(Dispatchers.Main) {
+                            binding.batchProgressText.text = getString(R.string.batch_progress, index + 1, total)
+                            binding.transcribeProgressBar.progress = (index * 100) / total
+                        }
+
                         try {
                             val samples = when (val source = result.source) {
                                 is MediaSource.LocalFile -> {
                                     setStatus(result, TranscriptionResult.Status.DECODING)
-                                    AudioDecoder.decodeToPcm16k(applicationContext, source.uri)
+                                    AudioDecoder.decodeToPcm16k(applicationContext, source.uri) { percent ->
+                                        reportProgress(result, percent)
+                                    }
                                 }
 
                                 is MediaSource.RemoteUrl -> {
@@ -233,7 +244,9 @@ class MainActivity : AppCompatActivity() {
                                     val file = UrlDownloader.download(applicationContext, source.url)
                                     try {
                                         setStatus(result, TranscriptionResult.Status.DECODING)
-                                        AudioDecoder.decodeFromPath(file.absolutePath)
+                                        AudioDecoder.decodeFromPath(file.absolutePath) { percent ->
+                                            reportProgress(result, percent)
+                                        }
                                     } finally {
                                         file.delete()
                                     }
@@ -241,11 +254,17 @@ class MainActivity : AppCompatActivity() {
                             }
 
                             setStatus(result, TranscriptionResult.Status.TRANSCRIBING)
-                            result.text = transcriber.transcribe(samples).trim()
+                            result.text = transcriber.transcribe(samples, onProgress = { percent ->
+                                reportProgress(result, percent)
+                            }).trim()
                             setStatus(result, TranscriptionResult.Status.DONE)
                         } catch (e: Exception) {
                             result.error = e.message ?: e.javaClass.simpleName
                             setStatus(result, TranscriptionResult.Status.ERROR)
+                        }
+
+                        withContext(Dispatchers.Main) {
+                            binding.transcribeProgressBar.progress = ((index + 1) * 100) / total
                         }
                     }
                 }
@@ -262,6 +281,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             withContext(Dispatchers.Main) {
+                binding.batchProgressText.visibility = View.GONE
                 binding.transcribeProgressBar.visibility = View.GONE
                 binding.transcribeButton.isEnabled = true
                 val anyDone = results.any { it.status == TranscriptionResult.Status.DONE }
@@ -271,8 +291,14 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun reportProgress(result: TranscriptionResult, percent: Int) {
+        result.progressPercent = percent
+        runOnUiThread { resultsAdapter.notifyDataSetChanged() }
+    }
+
     private suspend fun setStatus(result: TranscriptionResult, status: TranscriptionResult.Status) {
         result.status = status
+        result.progressPercent = 0
         withContext(Dispatchers.Main) { resultsAdapter.notifyDataSetChanged() }
     }
 

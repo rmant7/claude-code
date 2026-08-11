@@ -25,7 +25,14 @@ class ResultsAdapter(private val items: List<TranscriptionResult>) :
         val context = holder.itemView.context
 
         holder.name.text = item.source.displayName
-        holder.status.text = statusLabel(context, item.status)
+
+        val baseLabel = statusLabel(context, item.status)
+        holder.status.text = when (item.status) {
+            TranscriptionResult.Status.DECODING, TranscriptionResult.Status.TRANSCRIBING ->
+                if (item.progressPercent > 0) "$baseLabel ${item.progressPercent}%" else baseLabel
+            else -> baseLabel
+        }
+
         holder.text.text = when (item.status) {
             TranscriptionResult.Status.ERROR ->
                 context.getString(R.string.transcribe_error, item.error ?: "")

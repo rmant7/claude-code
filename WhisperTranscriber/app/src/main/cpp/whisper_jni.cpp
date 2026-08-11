@@ -33,10 +33,29 @@ Java_com_whispertranscriber_app_WhisperLib_freeContext(JNIEnv *env, jclass /*cla
     whisper_free(ctx);
 }
 
+namespace {
+
+// whisper_full() runs synchronously on the calling thread, so the JNIEnv captured when the JNI
+// call entered is still valid for the whole duration of inference — no thread attach/detach needed.
+struct ProgressCallbackContext {
+    JNIEnv *env;
+    jobject listener;
+    jmethodID onProgressMethod;
+};
+
+void onWhisperProgress(struct whisper_context * /*ctx*/, struct whisper_state * /*state*/, int progress, void *userData) {
+    auto *context = static_cast<ProgressCallbackContext *>(userData);
+    if (context != nullptr && context->listener != nullptr) {
+        context->env->CallVoidMethod(context->listener, context->onProgressMethod, static_cast<jint>(progress));
+    }
+}
+
+} // namespace
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_whispertranscriber_app_WhisperLib_transcribe(JNIEnv *env, jclass /*clazz*/, jlong contextPtr,
                                                        jint numThreads, jfloatArray audioData,
-                                                       jstring language) {
+                                                       jstring language, jobject progressListener) {
     if (contextPtr == 0) {
         return env->NewStringUTF("");
     }
@@ -55,6 +74,16 @@ Java_com_whispertranscriber_app_WhisperLib_transcribe(JNIEnv *env, jclass /*claz
     params.language = lang;
     params.n_threads = numThreads > 0 ? numThreads : 4;
     params.no_context = true;
+
+    ProgressCallbackContext progressContext{};
+    if (progressListener != nullptr) {
+        jclass listenerClass = env->GetObjectClass(progressListener);
+        progressContext.env = env;
+        progressContext.listener = progressListener;
+        progressContext.onProgressMethod = env->GetMethodID(listenerClass, "onProgress", "(I)V");
+        params.progress_callback = onWhisperProgress;
+        params.progress_callback_user_data = &progressContext;
+    }
 
     int result = whisper_full(ctx, params, samples, numSamples);
 

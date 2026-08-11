@@ -24,6 +24,7 @@
 
     <string name="transcribe">Transcribe</string>
     <string name="transcribing">Transcribing…</string>
+    <string name="batch_progress">File %1$d of %2$d</string>
     <string name="status_pending">Pending…</string>
     <string name="status_downloading_file">Downloading file…</string>
     <string name="status_decoding">Decoding audio…</string>

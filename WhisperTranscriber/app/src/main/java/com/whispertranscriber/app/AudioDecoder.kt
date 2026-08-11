@@ -21,17 +21,17 @@ object AudioDecoder {
     private const val TARGET_SAMPLE_RATE = 16000
     private const val TIMEOUT_US = 10_000L
 
-    fun decodeToPcm16k(context: Context, uri: Uri): FloatArray {
+    fun decodeToPcm16k(context: Context, uri: Uri, onProgress: ((Int) -> Unit)? = null): FloatArray {
         val tempFile = copyUriToTempFile(context, uri)
         return try {
-            decodeFile(tempFile.absolutePath)
+            decodeFile(tempFile.absolutePath, onProgress)
         } finally {
             tempFile.delete()
         }
     }
 
     /** Same as [decodeToPcm16k] but for a file already sitting on local disk (e.g. a downloaded URL). */
-    fun decodeFromPath(path: String): FloatArray = decodeFile(path)
+    fun decodeFromPath(path: String, onProgress: ((Int) -> Unit)? = null): FloatArray = decodeFile(path, onProgress)
 
     private fun copyUriToTempFile(context: Context, uri: Uri): File {
         val input = context.contentResolver.openInputStream(uri)
@@ -43,7 +43,7 @@ object AudioDecoder {
         return temp
     }
 
-    private fun decodeFile(path: String): FloatArray {
+    private fun decodeFile(path: String, onProgress: ((Int) -> Unit)? = null): FloatArray {
         val extractor = MediaExtractor()
         extractor.setDataSource(path)
 
@@ -72,6 +72,11 @@ object AudioDecoder {
         } else {
             1
         }
+        val durationUs = if (format.containsKey(MediaFormat.KEY_DURATION)) {
+            format.getLong(MediaFormat.KEY_DURATION)
+        } else {
+            -1L
+        }
 
         val codec = MediaCodec.createDecoderByType(mime)
         codec.configure(format, null, null, 0)
@@ -81,6 +86,7 @@ object AudioDecoder {
         val bufferInfo = MediaCodec.BufferInfo()
         var sawInputEos = false
         var sawOutputEos = false
+        var lastReportedPercent = -1
 
         try {
             while (!sawOutputEos) {
@@ -109,6 +115,13 @@ object AudioDecoder {
                         val chunk = ShortArray(shortBuffer.remaining())
                         shortBuffer.get(chunk)
                         pcmChunks.add(chunk)
+                    }
+                    if (durationUs > 0 && onProgress != null) {
+                        val percent = ((bufferInfo.presentationTimeUs * 100) / durationUs).toInt().coerceIn(0, 100)
+                        if (percent != lastReportedPercent) {
+                            lastReportedPercent = percent
+                            onProgress(percent)
+                        }
                     }
                     codec.releaseOutputBuffer(outputIndex, false)
                     if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {

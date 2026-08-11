@@ -179,12 +179,21 @@
             android:enabled="false"
             android:text="@string/transcribe" />
 
+        <TextView
+            android:id="@+id/batchProgressText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:visibility="gone" />
+
         <ProgressBar
             android:id="@+id/transcribeProgressBar"
-            android:layout_width="wrap_content"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="4dp"
+            android:max="100"
             android:visibility="gone" />
 
         <LinearLayout
