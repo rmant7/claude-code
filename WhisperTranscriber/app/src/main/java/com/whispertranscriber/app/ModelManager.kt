@@ -1,13 +1,13 @@
 package com.whispertranscriber.app
 
-import android.app.DownloadManager
 import android.content.Context
-import android.net.Uri
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
 
 class ModelManager(private val context: Context) {
-
-    private val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
 
     fun modelsDir(): File = File(context.getExternalFilesDir(null), "models").apply { mkdirs() }
 
@@ -22,29 +22,56 @@ class ModelManager(private val context: Context) {
         modelFile(model).delete()
     }
 
-    fun enqueueDownload(model: WhisperModel): Long {
+    data class Progress(val bytesDownloaded: Long, val bytesTotal: Long)
+
+    /**
+     * Streams the model into a ".part" temp file and only promotes it to the final file once
+     * the whole download has been verified complete. Android's system DownloadManager was found
+     * to sometimes report success on a truncated file (observed on MIUI/Xiaomi devices), which
+     * left behind a corrupt model that whisper.cpp couldn't load — this avoids that failure mode
+     * by keeping the whole transfer, and the completeness check, under our own control.
+     */
+    fun downloadModel(model: WhisperModel, onProgress: (Progress) -> Unit) {
         val destination = modelFile(model)
-        destination.delete()
-        val request = DownloadManager.Request(Uri.parse(model.url))
-            .setTitle(model.displayName)
-            .setDescription("Downloading Whisper model")
-            .setDestinationUri(Uri.fromFile(destination))
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setAllowedOverMetered(true)
-            .setAllowedOverRoaming(true)
-        return downloadManager.enqueue(request)
-    }
+        val tempFile = File(modelsDir(), "${model.fileName}.part")
+        val connection = URL(model.url).openConnection() as HttpURLConnection
+        connection.instanceFollowRedirects = true
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 30_000
 
-    data class Progress(val bytesDownloaded: Long, val bytesTotal: Long, val status: Int)
+        try {
+            connection.connect()
+            val responseCode = connection.responseCode
+            if (responseCode !in 200..299) {
+                throw IOException("Server returned HTTP $responseCode")
+            }
 
-    fun queryProgress(downloadId: Long): Progress? {
-        val query = DownloadManager.Query().setFilterById(downloadId)
-        downloadManager.query(query).use { cursor ->
-            if (!cursor.moveToFirst()) return null
-            val bytesDownloaded = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
-            val bytesTotal = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
-            val status = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-            return Progress(bytesDownloaded, bytesTotal, status)
+            val totalBytes = connection.contentLengthLong
+            var bytesDownloaded = 0L
+            connection.inputStream.use { input ->
+                FileOutputStream(tempFile).use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read == -1) break
+                        output.write(buffer, 0, read)
+                        bytesDownloaded += read
+                        onProgress(Progress(bytesDownloaded, totalBytes))
+                    }
+                }
+            }
+
+            if (totalBytes > 0 && bytesDownloaded != totalBytes) {
+                throw IOException("Download incomplete: got $bytesDownloaded of $totalBytes bytes")
+            }
+
+            destination.delete()
+            if (!tempFile.renameTo(destination)) {
+                throw IOException("Could not save the downloaded model")
+            }
+        } finally {
+            tempFile.delete()
+            connection.disconnect()
         }
     }
 }

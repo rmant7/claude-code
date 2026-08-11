@@ -7,9 +7,13 @@ model size and download it on demand from Hugging Face the first time you need i
 ## How it works
 
 1. **Pick a model size** — Tiny (~75 MB), Base (~142 MB), Small (~466 MB), Medium (~1.5 GB) or Large v3 Turbo
-   (~1.6 GB) — and tap **Download model**. The file is fetched from
-   `https://huggingface.co/ggerganov/whisper.cpp` via Android's `DownloadManager` and stored in the app's private
-   external storage (`Android/data/com.whispertranscriber.app/files/models`), so no storage permission is required.
+   (~1.6 GB) — and tap **Download model**. The file is streamed from `https://huggingface.co/ggerganov/whisper.cpp`
+   directly by the app (not via Android's system `DownloadManager` — that was found to sometimes report success on
+   a truncated file on some OEM ROMs) into a `.part` temp file, verified against the expected byte count, and only
+   then promoted to its final name. It lands in the app's private external storage
+   (`Android/data/com.whispertranscriber.app/files/models`), so no storage permission is required. If a model ever
+   fails to load (e.g. an interrupted download), the app deletes the bad file automatically so you can just tap
+   **Download model** again.
 2. **Choose an input source**:
    - **File** — pick a single audio/video file with the system file picker.
    - **URL** — paste a direct link to a remote audio/video file; the app downloads it to a temp file first.
@@ -29,7 +33,8 @@ model size and download it on demand from Hugging Face the first time you need i
 
 - `app/src/main/java/com/whispertranscriber/app/`
   - `MainActivity.kt` — UI and orchestration across the File / URL / Folder modes.
-  - `ModelManager.kt` — Whisper model download/storage via `DownloadManager`.
+  - `ModelManager.kt` — Whisper model download/storage; streams to a temp file and verifies completeness before
+    promoting it, so a dropped connection never leaves a corrupt "downloaded" model behind.
   - `UrlDownloader.kt` — streams a remote URL to a temp file for the URL mode.
   - `MediaFileUtils.kt` — recognizes media file extensions and recursively scans a picked folder.
   - `AudioDecoder.kt` — audio/video → 16 kHz mono float PCM decoding.

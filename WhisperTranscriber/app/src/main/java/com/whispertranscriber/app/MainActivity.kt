@@ -1,6 +1,5 @@
 package com.whispertranscriber.app
 
-import android.app.DownloadManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -21,7 +20,6 @@ import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.whispertranscriber.app.databinding.ActivityMainBinding
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -153,44 +151,36 @@ class MainActivity : AppCompatActivity() {
 
     private fun startModelDownload() {
         val model = selectedModel
-        val downloadId = modelManager.enqueueDownload(model)
         binding.downloadButton.isEnabled = false
         binding.downloadProgressBar.visibility = View.VISIBLE
         binding.downloadProgressBar.progress = 0
 
         lifecycleScope.launch(Dispatchers.IO) {
-            var finished = false
-            while (!finished) {
-                delay(400)
-                val progress = modelManager.queryProgress(downloadId) ?: break
-                val percent = if (progress.bytesTotal > 0) {
-                    ((progress.bytesDownloaded * 100) / progress.bytesTotal).toInt()
-                } else {
-                    0
+            try {
+                var lastPercent = -1
+                modelManager.downloadModel(model) { progress ->
+                    val percent = if (progress.bytesTotal > 0) {
+                        ((progress.bytesDownloaded * 100) / progress.bytesTotal).toInt()
+                    } else {
+                        0
+                    }
+                    if (percent != lastPercent) {
+                        lastPercent = percent
+                        runOnUiThread { binding.downloadProgressBar.progress = percent }
+                    }
                 }
 
                 withContext(Dispatchers.Main) {
-                    binding.downloadProgressBar.progress = percent
+                    binding.downloadProgressBar.visibility = View.GONE
+                    refreshModelStatus()
+                    Toast.makeText(this@MainActivity, R.string.download_complete, Toast.LENGTH_SHORT).show()
                 }
-
-                when (progress.status) {
-                    DownloadManager.STATUS_SUCCESSFUL -> {
-                        finished = true
-                        withContext(Dispatchers.Main) {
-                            binding.downloadProgressBar.visibility = View.GONE
-                            refreshModelStatus()
-                            Toast.makeText(this@MainActivity, R.string.download_complete, Toast.LENGTH_SHORT).show()
-                        }
-                    }
-
-                    DownloadManager.STATUS_FAILED -> {
-                        finished = true
-                        withContext(Dispatchers.Main) {
-                            binding.downloadProgressBar.visibility = View.GONE
-                            binding.downloadButton.isEnabled = true
-                            Toast.makeText(this@MainActivity, R.string.download_failed, Toast.LENGTH_LONG).show()
-                        }
-                    }
+            } catch (e: Exception) {
+                modelManager.deleteModel(model)
+                withContext(Dispatchers.Main) {
+                    binding.downloadProgressBar.visibility = View.GONE
+                    binding.downloadButton.isEnabled = true
+                    Toast.makeText(this@MainActivity, R.string.download_failed, Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -214,7 +204,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun runBatch(sources: List<MediaSource>) {
-        val modelFile = modelManager.modelFile(selectedModel)
+        val model = selectedModel
+        val modelFile = modelManager.modelFile(model)
 
         results.clear()
         results.addAll(sources.map { TranscriptionResult(it) })
@@ -259,7 +250,12 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             } catch (e: Exception) {
+                // The model itself failed to load (e.g. a corrupted download) rather than a
+                // per-file decode/transcribe error, which is already handled above. Drop the
+                // bad file so the UI reflects "not downloaded" and a retry can succeed.
+                modelManager.deleteModel(model)
                 withContext(Dispatchers.Main) {
+                    refreshModelStatus()
                     val message = getString(R.string.transcribe_error, e.message ?: e.javaClass.simpleName)
                     Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
                 }
