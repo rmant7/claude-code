@@ -78,8 +78,9 @@ void onWhisperNewSegment(struct whisper_context *ctx, struct whisper_state * /*s
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_whispertranscriber_app_WhisperLib_transcribe(JNIEnv *env, jclass /*clazz*/, jlong contextPtr,
-                                                       jint numThreads, jfloatArray audioData,
-                                                       jstring language, jobject progressListener,
+                                                       jint numThreads, jint numProcessors,
+                                                       jfloatArray audioData, jstring language,
+                                                       jobject progressListener,
                                                        jobject segmentListener) {
     if (contextPtr == 0) {
         return env->NewStringUTF("");
@@ -100,27 +101,39 @@ Java_com_whispertranscriber_app_WhisperLib_transcribe(JNIEnv *env, jclass /*claz
     params.n_threads = numThreads > 0 ? numThreads : 4;
     params.no_context = true;
 
+    const int processors = numProcessors > 1 ? numProcessors : 1;
+
+    // whisper_full_parallel() splits the audio across `processors` extra native threads that it
+    // spawns and joins internally, each running its own whisper_state. Our callback contexts only
+    // capture the calling thread's JNIEnv (safe for plain whisper_full(), unsafe from another
+    // thread), so live progress/segment streaming is wired up for the single-processor path only.
+    // Parallel runs still get the full speed win — their result just lands all at once when the
+    // call returns instead of streaming in live.
     ProgressCallbackContext progressContext{};
-    if (progressListener != nullptr) {
-        jclass listenerClass = env->GetObjectClass(progressListener);
-        progressContext.env = env;
-        progressContext.listener = progressListener;
-        progressContext.onProgressMethod = env->GetMethodID(listenerClass, "onProgress", "(I)V");
-        params.progress_callback = onWhisperProgress;
-        params.progress_callback_user_data = &progressContext;
-    }
-
     SegmentCallbackContext segmentContext{};
-    if (segmentListener != nullptr) {
-        jclass listenerClass = env->GetObjectClass(segmentListener);
-        segmentContext.env = env;
-        segmentContext.listener = segmentListener;
-        segmentContext.onSegmentMethod = env->GetMethodID(listenerClass, "onSegment", "(Ljava/lang/String;)V");
-        params.new_segment_callback = onWhisperNewSegment;
-        params.new_segment_callback_user_data = &segmentContext;
+    if (processors == 1) {
+        if (progressListener != nullptr) {
+            jclass listenerClass = env->GetObjectClass(progressListener);
+            progressContext.env = env;
+            progressContext.listener = progressListener;
+            progressContext.onProgressMethod = env->GetMethodID(listenerClass, "onProgress", "(I)V");
+            params.progress_callback = onWhisperProgress;
+            params.progress_callback_user_data = &progressContext;
+        }
+
+        if (segmentListener != nullptr) {
+            jclass listenerClass = env->GetObjectClass(segmentListener);
+            segmentContext.env = env;
+            segmentContext.listener = segmentListener;
+            segmentContext.onSegmentMethod = env->GetMethodID(listenerClass, "onSegment", "(Ljava/lang/String;)V");
+            params.new_segment_callback = onWhisperNewSegment;
+            params.new_segment_callback_user_data = &segmentContext;
+        }
     }
 
-    int result = whisper_full(ctx, params, samples, numSamples);
+    int result = processors > 1
+                      ? whisper_full_parallel(ctx, params, samples, numSamples, processors)
+                      : whisper_full(ctx, params, samples, numSamples);
 
     env->ReleaseFloatArrayElements(audioData, samples, JNI_ABORT);
     env->ReleaseStringUTFChars(language, lang);

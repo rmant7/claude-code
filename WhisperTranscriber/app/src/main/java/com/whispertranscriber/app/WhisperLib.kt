@@ -27,6 +27,7 @@ object WhisperLib {
     external fun transcribe(
         contextPtr: Long,
         numThreads: Int,
+        numProcessors: Int,
         audioData: FloatArray,
         language: String,
         progressListener: WhisperProgressListener?,

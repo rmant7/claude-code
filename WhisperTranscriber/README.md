@@ -6,8 +6,10 @@ model size and download it on demand from Hugging Face the first time you need i
 
 ## How it works
 
-1. **Pick a model size** — Tiny (~75 MB), Base (~142 MB), Small (~466 MB), Medium (~1.5 GB) or Large v3 Turbo
-   (~1.6 GB) — and tap **Download model**. The download runs in `ModelDownloadService`, a **foreground service**
+1. **Pick a model size** — Tiny, Base, Small, Medium and Large v3 Turbo, each also offered as a **quantized**
+   variant (q5_1/q5_0) that's roughly a third of the full-precision file size and noticeably faster to run on a
+   phone CPU, at a small accuracy cost — worth trying first if a full-precision model feels too slow. Tap
+   **Download model**. The download runs in `ModelDownloadService`, a **foreground service**
    with a progress notification, not a plain Activity-scoped coroutine — large models can take many minutes on a
    mobile connection, and a background download without a foreground service gets starved by Doze/App Standby
    network restrictions the moment the screen locks, which was causing big models to silently stall or never
@@ -27,7 +29,14 @@ model size and download it on demand from Hugging Face the first time you need i
      webm, mkv, ts, …), since only the audio track is selected and video frames are never touched.
    - Downmixes to mono and resamples to 16 kHz, the format whisper.cpp expects.
    - Runs inference on-device through a small JNI bridge (`app/src/main/cpp/whisper_jni.cpp`) around whisper.cpp's C
-     API. The model is loaded once and reused across every file in a batch.
+     API. The model is loaded once and reused across every file in a batch. On devices with 4+ cores, inference uses
+     whisper.cpp's `whisper_full_parallel()` (2 processors, splitting the audio and running each half on its own
+     thread) instead of the single-threaded `whisper_full()`, which is a real wall-clock speedup — plain
+     `whisper_full()` only parallelizes the matrix math *within* one pass, not across chunks of audio. The trade-off
+     is that live progress-percent and streamed partial text (see below) are only available in single-processor
+     mode, since the extra native threads whisper_full_parallel() spawns can't safely reuse our JNI callback's
+     thread-bound JNIEnv; parallel runs still show their full transcript the moment the file finishes, just not
+     word-by-word while it's in flight.
    - In a multi-file batch, the next file's audio is decoded in the background while the current file is being
      transcribed (a one-item lookahead), so decode time is fully hidden for every file but the first — decoding
      via `MediaCodec` is normally much faster than whisper.cpp inference, so this (rather than chunking a single
@@ -95,4 +104,6 @@ under **Artifacts**. You can also trigger it manually from the **Actions** tab (
 - The CI build fetches whisper.cpp source directly from GitHub at build time (`GIT_TAG master`); pin it to a specific
   release tag in `app/src/main/cpp/CMakeLists.txt` if you need fully reproducible builds.
 - Whisper model weights are redistributed by the whisper.cpp project on Hugging Face under the same license as the
-  original OpenAI Whisper release.
+  original OpenAI Whisper release. The quantized filenames in `WhisperModel.kt` (e.g. `ggml-medium-q5_0.bin`) follow
+  that repo's established naming pattern; if a given file ever gets renamed/removed upstream, that one model just
+  fails to download with a clear error — the other model sizes are unaffected.
