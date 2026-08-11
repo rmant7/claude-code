@@ -1,0 +1,19 @@
+<resources>
+    <string name="app_name">Whisper Transcriber</string>
+    <string name="status_not_downloaded">Model not downloaded yet.</string>
+    <string name="status_downloaded">Model ready on this device.</string>
+    <string name="download_model">Download model</string>
+    <string name="delete_model">Delete model</string>
+    <string name="download_complete">Model downloaded.</string>
+    <string name="download_failed">Download failed. Check your connection and try again.</string>
+    <string name="pick_file">Pick .amr file</string>
+    <string name="no_file_selected">No file selected.</string>
+    <string name="transcribe">Transcribe</string>
+    <string name="transcribing">Transcribing…</string>
+    <string name="result_placeholder">Transcript will appear here.</string>
+    <string name="result_empty">(No speech detected)</string>
+    <string name="transcribe_error">Error: %1$s</string>
+    <string name="copy_text">Copy</string>
+    <string name="share_text">Share</string>
+    <string name="copied">Copied to clipboard.</string>
+</resources>
