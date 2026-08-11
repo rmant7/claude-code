@@ -11,9 +11,10 @@ import java.io.IOException
 import java.nio.ByteOrder
 
 /**
- * Decodes an AMR (AMR-NB/AMR-WB) audio file into mono 16 kHz float PCM samples,
- * the input format expected by whisper.cpp. Android's MediaExtractor/MediaCodec
- * natively support the AMR container and codecs, so no extra native decoder is needed.
+ * Decodes an audio or video file into mono 16 kHz float PCM samples, the input format
+ * expected by whisper.cpp. Android's MediaExtractor/MediaCodec natively demux most common
+ * audio and video containers (mp3, wav, m4a/aac, flac, ogg/opus, amr, mp4, 3gp, webm/mkv, …);
+ * for video files only the audio track is selected and decoded, video frames are ignored.
  */
 object AudioDecoder {
 
@@ -28,6 +29,9 @@ object AudioDecoder {
             tempFile.delete()
         }
     }
+
+    /** Same as [decodeToPcm16k] but for a file already sitting on local disk (e.g. a downloaded URL). */
+    fun decodeFromPath(path: String): FloatArray = decodeFile(path)
 
     private fun copyUriToTempFile(context: Context, uri: Uri): File {
         val input = context.contentResolver.openInputStream(uri)

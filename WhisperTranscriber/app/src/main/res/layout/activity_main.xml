@@ -12,10 +12,10 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
             android:text="1. Choose a Whisper model"
-            android:textStyle="bold"
             android:textSize="16sp"
-            android:layout_marginBottom="8dp" />
+            android:textStyle="bold" />
 
         <Spinner
             android:id="@+id/modelSpinner"
@@ -41,8 +41,8 @@
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
 
             <Button
                 android:id="@+id/downloadButton"
@@ -63,45 +63,114 @@
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
-            android:background="#DDDDDD"
             android:layout_marginTop="16dp"
-            android:layout_marginBottom="16dp" />
+            android:layout_marginBottom="16dp"
+            android:background="#DDDDDD" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="2. Pick an AMR audio file"
-            android:textStyle="bold"
+            android:layout_marginBottom="8dp"
+            android:text="@string/source_label"
             android:textSize="16sp"
-            android:layout_marginBottom="8dp" />
+            android:textStyle="bold" />
 
-        <Button
-            android:id="@+id/pickFileButton"
+        <RadioGroup
+            android:id="@+id/sourceModeGroup"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/pick_file" />
+            android:orientation="horizontal">
 
-        <TextView
-            android:id="@+id/selectedFileText"
+            <RadioButton
+                android:id="@+id/modeFileRadio"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:checked="true"
+                android:text="@string/mode_file" />
+
+            <RadioButton
+                android:id="@+id/modeUrlRadio"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/mode_url" />
+
+            <RadioButton
+                android:id="@+id/modeFolderRadio"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/mode_folder" />
+        </RadioGroup>
+
+        <LinearLayout
+            android:id="@+id/fileModeLayout"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="@string/no_file_selected" />
+            android:orientation="vertical"
+            android:visibility="visible">
+
+            <Button
+                android:id="@+id/pickFileButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/pick_file" />
+
+            <TextView
+                android:id="@+id/selectedFileText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/no_file_selected" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/urlModeLayout"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <EditText
+                android:id="@+id/urlInput"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/url_hint"
+                android:inputType="textUri"
+                android:maxLines="1" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/folderModeLayout"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/pickFolderButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/pick_folder" />
+
+            <TextView
+                android:id="@+id/selectedFolderText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/no_folder_selected" />
+        </LinearLayout>
 
         <View
             android:layout_width="match_parent"
             android:layout_height="1dp"
-            android:background="#DDDDDD"
             android:layout_marginTop="16dp"
-            android:layout_marginBottom="16dp" />
-
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="3. Transcribe"
-            android:textStyle="bold"
-            android:textSize="16sp"
-            android:layout_marginBottom="8dp" />
+            android:layout_marginBottom="16dp"
+            android:background="#DDDDDD" />
 
         <Button
             android:id="@+id/transcribeButton"
@@ -118,39 +187,52 @@
             android:layout_marginTop="8dp"
             android:visibility="gone" />
 
-        <TextView
-            android:id="@+id/resultText"
+        <LinearLayout
+            android:id="@+id/resultsSection"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:textIsSelectable="true"
-            android:padding="8dp"
-            android:background="#F5F5F5"
-            android:minHeight="120dp"
-            android:text="@string/result_placeholder" />
+            android:orientation="vertical"
+            android:visibility="gone">
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:layout_marginTop="8dp">
-
-            <Button
-                android:id="@+id/copyButton"
-                android:layout_width="0dp"
+            <TextView
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:enabled="false"
-                android:text="@string/copy_text" />
+                android:layout_marginBottom="8dp"
+                android:text="@string/results_header"
+                android:textSize="16sp"
+                android:textStyle="bold" />
 
-            <Button
-                android:id="@+id/shareButton"
-                android:layout_width="0dp"
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:layout_marginStart="8dp"
-                android:enabled="false"
-                android:text="@string/share_text" />
+                android:layout_marginBottom="8dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/copyAllButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:enabled="false"
+                    android:text="@string/copy_all" />
+
+                <Button
+                    android:id="@+id/shareAllButton"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_marginStart="8dp"
+                    android:enabled="false"
+                    android:text="@string/share_all" />
+            </LinearLayout>
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/resultsRecyclerView"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:nestedScrollingEnabled="false" />
+
         </LinearLayout>
 
     </LinearLayout>

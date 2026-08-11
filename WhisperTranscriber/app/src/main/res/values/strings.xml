@@ -1,19 +1,39 @@
 <resources>
     <string name="app_name">Whisper Transcriber</string>
+
     <string name="status_not_downloaded">Model not downloaded yet.</string>
     <string name="status_downloaded">Model ready on this device.</string>
     <string name="download_model">Download model</string>
     <string name="delete_model">Delete model</string>
     <string name="download_complete">Model downloaded.</string>
     <string name="download_failed">Download failed. Check your connection and try again.</string>
-    <string name="pick_file">Pick .amr file</string>
+
+    <string name="source_label">2. Choose input</string>
+    <string name="mode_file">File</string>
+    <string name="mode_url">URL</string>
+    <string name="mode_folder">Folder</string>
+
+    <string name="pick_file">Pick audio/video file</string>
     <string name="no_file_selected">No file selected.</string>
+
+    <string name="url_hint">https://example.com/audio.mp3</string>
+
+    <string name="pick_folder">Pick folder</string>
+    <string name="no_folder_selected">No folder selected.</string>
+    <string name="folder_files_found">%1$d media file(s) found</string>
+
     <string name="transcribe">Transcribe</string>
     <string name="transcribing">Transcribing…</string>
-    <string name="result_placeholder">Transcript will appear here.</string>
-    <string name="result_empty">(No speech detected)</string>
+    <string name="status_pending">Pending…</string>
+    <string name="status_downloading_file">Downloading file…</string>
+    <string name="status_decoding">Decoding audio…</string>
+    <string name="status_done">Done</string>
+    <string name="status_failed">Failed</string>
+    <string name="no_speech_detected">(No speech detected)</string>
     <string name="transcribe_error">Error: %1$s</string>
-    <string name="copy_text">Copy</string>
-    <string name="share_text">Share</string>
+
+    <string name="results_header">3. Results</string>
+    <string name="copy_all">Copy all</string>
+    <string name="share_all">Share all</string>
     <string name="copied">Copied to clipboard.</string>
 </resources>
