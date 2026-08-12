@@ -46,9 +46,14 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace --no-daemon
 
+      - name: Rename APK with version number
+        run: |
+          mv app/build/outputs/apk/debug/app-debug.apk \
+             app/build/outputs/apk/debug/whisper_debug_${{ github.run_number }}.apk
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: whisper-transcriber-debug-apk
-          path: WhisperTranscriber/app/build/outputs/apk/debug/*.apk
+          name: whisper_debug_${{ github.run_number }}
+          path: WhisperTranscriber/app/build/outputs/apk/debug/whisper_debug_${{ github.run_number }}.apk
           if-no-files-found: error
