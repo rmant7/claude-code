@@ -27,6 +27,21 @@ android {
         }
     }
 
+    // GitHub Actions runners are ephemeral: without a fixed keystore, Gradle's default debug
+    // signing config auto-generates a brand new debug key on every single CI run, so each build
+    // ends up signed with a different certificate. Android refuses to install an "update" over an
+    // existing app when the signatures don't match, so every CI-built APK required a full
+    // uninstall/reinstall instead of an in-place update. Pinning debug signing to a checked-in
+    // keystore keeps every build signed the same way.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -34,6 +49,7 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
