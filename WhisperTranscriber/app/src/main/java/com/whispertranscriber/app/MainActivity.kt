@@ -25,6 +25,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.whispertranscriber.app.databinding.ActivityMainBinding
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
@@ -279,8 +280,15 @@ class MainActivity : AppCompatActivity() {
                             ).trim()
                             result.text = transcript
                             setStatus(result, TranscriptionResult.Status.DONE)
-                        } catch (e: Exception) {
-                            result.error = e.message ?: e.javaClass.simpleName
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Throwable) {
+                            // Catching Throwable (not just Exception) matters here: a single
+                            // outsized file can throw OutOfMemoryError decoding into one big PCM
+                            // buffer, and that's an Error, not an Exception — letting it through
+                            // used to kill this whole coroutine silently partway through a batch
+                            // instead of just failing that one file and moving on.
+                            result.error = "${e.javaClass.simpleName}: ${e.message ?: "no message"}"
                             setStatus(result, TranscriptionResult.Status.ERROR)
                         }
 
@@ -289,14 +297,19 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 // The model itself failed to load (e.g. a corrupted download) rather than a
                 // per-file decode/transcribe error, which is already handled above. Drop the
                 // bad file so the UI reflects "not downloaded" and a retry can succeed.
                 modelManager.deleteModel(model)
                 withContext(Dispatchers.Main) {
                     refreshModelStatus()
-                    val message = getString(R.string.transcribe_error, e.message ?: e.javaClass.simpleName)
+                    val message = getString(
+                        R.string.transcribe_error,
+                        "${e.javaClass.simpleName}: ${e.message ?: "no message"}"
+                    )
                     Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
                 }
             }

@@ -29,14 +29,15 @@ model size and download it on demand from Hugging Face the first time you need i
      webm, mkv, ts, …), since only the audio track is selected and video frames are never touched.
    - Downmixes to mono and resamples to 16 kHz, the format whisper.cpp expects.
    - Runs inference on-device through a small JNI bridge (`app/src/main/cpp/whisper_jni.cpp`) around whisper.cpp's C
-     API. The model is loaded once and reused across every file in a batch. On devices with 4+ cores, inference uses
-     whisper.cpp's `whisper_full_parallel()` (2 processors, splitting the audio and running each half on its own
-     thread) instead of the single-threaded `whisper_full()`, which is a real wall-clock speedup — plain
-     `whisper_full()` only parallelizes the matrix math *within* one pass, not across chunks of audio. The trade-off
-     is that live progress-percent and streamed partial text (see below) are only available in single-processor
-     mode, since the extra native threads whisper_full_parallel() spawns can't safely reuse our JNI callback's
-     thread-bound JNIEnv; parallel runs still show their full transcript the moment the file finishes, just not
-     word-by-word while it's in flight.
+     API. The model is loaded **once** and reused across every file in a batch — this is also why files aren't
+     transcribed several-at-once: each loaded whisper.cpp context holds the model weights in RAM (e.g. ~1.5 GB for
+     Medium), so N files running fully in parallel would mean N full model loads, which would OOM on a typical
+     phone for anything above Tiny/Base. Instead, on devices with 4+ cores, inference uses whisper.cpp's
+     `whisper_full_parallel()` (2 processors, splitting *one* file's audio across native threads that share the
+     same loaded model) instead of single-threaded `whisper_full()` — a real wall-clock speedup without the memory
+     cost of extra model copies. Progress/segment callbacks resolve their own JNIEnv per-thread (attaching if
+     needed) via a cached `JavaVM`, since the extra native threads whisper_full_parallel() spawns can't reuse a
+     JNIEnv captured on a different thread — so live progress and streamed text work in both modes.
    - In a multi-file batch, the next file's audio is decoded in the background while the current file is being
      transcribed (a one-item lookahead), so decode time is fully hidden for every file but the first — decoding
      via `MediaCodec` is normally much faster than whisper.cpp inference, so this (rather than chunking a single
@@ -96,6 +97,11 @@ under **Artifacts**. You can also trigger it manually from the **Actions** tab (
   mkv, ts`. Actual decodability still depends on the device's codecs — an unsupported codec fails that one item and
   the batch continues with the rest.
 - `usesCleartextTraffic` is enabled so the URL mode can also fetch plain `http://` links, not just `https://`.
+- Per-file failures in a batch (bad codec, corrupt file, an unusually long file that can't fit in memory once
+  decoded to PCM, …) are caught and reported on that file's card without stopping the rest of the batch — including
+  `OutOfMemoryError`, which is an `Error` rather than an `Exception` in Kotlin/Java and used to slip past a
+  narrower `catch (e: Exception)`, silently killing the whole batch partway through instead of just failing that
+  one file. `android:largeHeap="true"` is also set to give large files more headroom before hitting that ceiling.
 - Model downloads run in a foreground service and survive backgrounding. Transcription batches do not (yet) — they
   still run on a coroutine tied to the Activity's lifecycle, so a batch is interrupted if the app process is killed
   while backgrounded. Worth moving to a foreground service too if long unattended batches become a common case.
