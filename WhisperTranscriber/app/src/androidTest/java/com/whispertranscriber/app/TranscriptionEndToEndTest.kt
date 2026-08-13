@@ -77,6 +77,11 @@ class TranscriptionEndToEndTest {
     }
 
     private companion object {
-        const val TRANSCRIBE_TIMEOUT_SECONDS = 120L
+        // The CI emulator is a shared, 2-core, software-rendered VM — a cold model load plus a
+        // 4-second clip on the "tiny" model took just over 120s there (confirmed via a
+        // TimeoutException, not a hang: the run otherwise completed normally). This threshold only
+        // needs to catch genuine hangs, not enforce a performance SLA on weak/oversubscribed
+        // hardware, so it's set generously above that observed CI runtime.
+        const val TRANSCRIBE_TIMEOUT_SECONDS = 300L
     }
 }
