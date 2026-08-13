@@ -16,6 +16,12 @@ android {
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
+        // CI passes the GitHub Actions run number (which also names the whisper_debug_N.apk
+        // artifact) so the app can show it on-screen — otherwise there's no way to confirm which
+        // build actually got installed on a device.
+        val buildNumber = (project.findProperty("buildNumber") as String?) ?: "local"
+        buildConfigField("String", "BUILD_NUMBER", "\"$buildNumber\"")
+
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
@@ -72,6 +78,7 @@ android {
 
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 
     packaging {

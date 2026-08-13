@@ -1,8 +1,10 @@
 package com.whispertranscriber.app
 
+import android.view.View
 import android.widget.Button
 import android.widget.RadioButton
 import android.widget.Spinner
+import android.widget.TextView
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -43,6 +45,19 @@ class MainActivitySmokeTest {
                     "Model spinner should list every known Whisper model",
                     WhisperModel.ALL.size,
                     modelSpinner.adapter.count
+                )
+
+                val versionBanner = activity.findViewById<TextView>(R.id.versionBanner)
+                assertTrue(
+                    "Version banner should show the app's version name so an install can be confirmed",
+                    versionBanner.text.contains(BuildConfig.VERSION_NAME)
+                )
+
+                val stopButton = activity.findViewById<Button>(R.id.stopButton)
+                assertEquals(
+                    "Stop should stay hidden until a batch is actually running",
+                    View.GONE,
+                    stopButton.visibility
                 )
             }
         }

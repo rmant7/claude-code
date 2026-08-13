@@ -91,8 +91,16 @@ class MainActivity : AppCompatActivity() {
         binding.pickFileButton.setOnClickListener { pickFileLauncher.launch(arrayOf("*/*")) }
         binding.pickFolderButton.setOnClickListener { pickFolderLauncher.launch(null) }
         binding.transcribeButton.setOnClickListener { onTranscribeClicked() }
+        binding.stopButton.setOnClickListener { onStopClicked() }
         binding.copyAllButton.setOnClickListener { copyAllResults() }
         binding.shareAllButton.setOnClickListener { shareAllResults() }
+        binding.viewTranscriptsButton.setOnClickListener {
+            startActivity(Intent(this, TranscriptsActivity::class.java))
+        }
+
+        binding.versionBanner.text = getString(
+            R.string.version_banner, BuildConfig.VERSION_NAME, BuildConfig.BUILD_NUMBER
+        )
 
         binding.urlInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -186,6 +194,7 @@ class MainActivity : AppCompatActivity() {
                     when (status) {
                         TranscriptionState.Status.Idle -> {
                             batchRunning = false
+                            binding.stopButton.visibility = View.GONE
                             updateTranscribeButtonState()
                         }
 
@@ -201,6 +210,11 @@ class MainActivity : AppCompatActivity() {
                                 getString(R.string.batch_progress, status.currentIndex + 1, status.total)
                             binding.transcribeProgressBar.visibility = View.VISIBLE
                             binding.transcribeProgressBar.progress = (status.currentIndex * 100) / status.total
+                            binding.stopButton.visibility = View.VISIBLE
+                            binding.stopButton.isEnabled = !TranscriptionControl.stopRequested.get()
+                            binding.stopButton.setText(
+                                if (TranscriptionControl.stopRequested.get()) R.string.stopping else R.string.stop
+                            )
                             binding.copyAllButton.isEnabled = false
                             binding.shareAllButton.isEnabled = false
                             updateTranscribeButtonState()
@@ -215,7 +229,11 @@ class MainActivity : AppCompatActivity() {
                             binding.resultsSection.visibility = View.VISIBLE
                             binding.batchProgressText.visibility = View.GONE
                             binding.transcribeProgressBar.visibility = View.GONE
-                            val anyDone = status.results.any { it.status == TranscriptionResult.Status.DONE }
+                            binding.stopButton.visibility = View.GONE
+                            val anyDone = status.results.any {
+                                it.status == TranscriptionResult.Status.DONE ||
+                                    it.status == TranscriptionResult.Status.CANCELLED
+                            }
                             binding.copyAllButton.isEnabled = anyDone
                             binding.shareAllButton.isEnabled = anyDone
                             updateTranscribeButtonState()
@@ -296,11 +314,18 @@ class MainActivity : AppCompatActivity() {
         updateTranscribeButtonState()
     }
 
+    private fun onStopClicked() {
+        TranscriptionControl.requestStop()
+        binding.stopButton.isEnabled = false
+        binding.stopButton.setText(R.string.stopping)
+    }
+
     private fun buildCombinedText(): String =
-        results.filter { it.status == TranscriptionResult.Status.DONE }
-            .joinToString("\n\n") { r ->
-                "${r.source.displayName}:\n${r.text.ifBlank { getString(R.string.no_speech_detected) }}"
-            }
+        results.filter {
+            it.status == TranscriptionResult.Status.DONE || it.status == TranscriptionResult.Status.CANCELLED
+        }.joinToString("\n\n") { r ->
+            "${r.source.displayName}:\n${r.text.ifBlank { getString(R.string.no_speech_detected) }}"
+        }
 
     private fun copyAllResults() {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

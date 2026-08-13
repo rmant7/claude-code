@@ -7,5 +7,5 @@ data class TranscriptionResult(
     var error: String? = null,
     var progressPercent: Int = 0
 ) {
-    enum class Status { PENDING, DOWNLOADING, DECODING, TRANSCRIBING, DONE, ERROR }
+    enum class Status { PENDING, DOWNLOADING, DECODING, TRANSCRIBING, DONE, ERROR, CANCELLED }
 }

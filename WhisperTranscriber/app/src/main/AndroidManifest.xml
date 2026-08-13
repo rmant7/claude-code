@@ -23,6 +23,10 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".TranscriptsActivity"
+            android:exported="false" />
+
         <service
             android:name=".ModelDownloadService"
             android:foregroundServiceType="dataSync"

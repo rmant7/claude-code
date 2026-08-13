@@ -37,24 +37,26 @@ model size and download it on demand from Hugging Face the first time you need i
      webm, mkv, ts, …), since only the audio track is selected and video frames are never touched.
    - Downmixes to mono and resamples to 16 kHz, the format whisper.cpp expects.
    - Runs inference on-device through a small JNI bridge (`app/src/main/cpp/whisper_jni.cpp`) around whisper.cpp's C
-     API, single-threaded (`whisper_full()`, using up to 4 CPU cores for the matrix math inside one pass — capped
-     below the device's full core count on purpose, see below). An earlier version tried `whisper_full_parallel()`
-     (splitting one file's audio across native threads) for extra wall-clock speed on multi-core phones, but it was
-     only ever verified to *compile* — never confirmed correct on a real device — and a user hit a transcription
-     that ran 15+ minutes on a 0.5 MB file with no progress at all, which is consistent with that untested path
-     hanging on a short clip. It's reverted pending real-device verification; `TranscriptionEndToEndTest` (see
-     Testing below) now exists specifically to catch a regression like that before it ships again. Separately, the
-     same user saw a several-minute call recording still under 50% transcribed after multiple hours — orders of
-     magnitude slower than expected for that little audio, and consistent with mobile thermal throttling: pinning
-     every core at 100% for many sustained minutes is exactly the load pattern that makes a phone clock itself down
-     progressively, so the longer a file runs the slower it gets. The thread count used for inference is now capped
-     at 4 (`Transcriber.kt`) rather than the device's full core count, trading a bit of best-case throughput for
-     staying further from that throttling cliff on long-running batches — unverified on real hardware like the
-     rest of this paragraph, since reproducing sustained thermal behavior isn't practical in CI. The model is loaded
-     **once** and reused across every file in a batch — this is also why files
-     aren't transcribed several-at-once: each loaded whisper.cpp context holds the model weights in RAM (e.g. ~1.5 GB
-     for Medium), so N files running fully in parallel would mean N full model loads, which would OOM on a typical
-     phone for anything above Tiny/Base.
+     API. Total CPU budget for one `transcribe()` call is capped at 4 cores (`Transcriber.kt`) rather than the
+     device's full core count — pinning every core at 100% for the many sustained minutes a long file needs is
+     exactly the load pattern that triggers mobile thermal throttling, and a user saw a several-minute call
+     recording still under 50% transcribed after multiple hours, orders of magnitude slower than expected and
+     consistent with the phone clocking itself down progressively the longer it ran flat-out. That budget is split
+     between real chunk-level parallelism (`whisper_full_parallel()`, splitting one file's audio across native
+     threads) and per-chunk thread count, but *only* when the file is long enough that every chunk still gets a
+     useful amount of audio (currently ≥30s/chunk, see `computeParallelism()` in `Transcriber.kt`) — very short
+     clips fall back to a single `whisper_full()` call. This guards against the original edge case that motivated
+     briefly forcing single-processor mode everywhere: a suspected hang on a very short clip, plausible as
+     degenerate near-empty chunks. That blanket single-processor fix was reverted because it traded an *unconfirmed*
+     hang for a *confirmed*, severe slowdown (CI measured a 4-second clip on the tiny model exceeding a 120-second
+     budget under `whisper_full()` alone) — real parallelism is also the whole point for the "dozens/hundreds of
+     files in a couple of hours" use case this app targets. The safety net this time is
+     [abort_callback](#stopping-a-running-batch) rather than avoiding parallelism altogether. `TranscriptionEndToEndTest`
+     (see Testing below) exists to catch a hang like that before it ships again, and `TranscriberParallelismTest`
+     covers the chunk-count math on the JVM. The model is loaded **once** and reused across every file in a
+     batch — this is also why files aren't transcribed several-at-once: each loaded whisper.cpp context holds the
+     model weights in RAM (e.g. ~1.5 GB for Medium), so N files running fully in parallel would mean N full model
+     loads, which would OOM on a typical phone for anything above Tiny/Base.
    - In a multi-file batch, the next file's audio is decoded in the background while the current file is being
      transcribed (a one-item lookahead), so decode time is fully hidden for every file but the first — decoding
      via `MediaCodec` is normally much faster than whisper.cpp inference, so this (rather than chunking a single
@@ -67,6 +69,26 @@ model size and download it on demand from Hugging Face the first time you need i
 5. Each result appears as its own card (filename, status, live/finished transcript) as soon as it's ready;
    **Copy all** / **Share all** combine every finished transcript into one block of text.
 
+### Stopping a running batch
+
+A **Stop** button appears next to **Transcribe** while a batch is running. It does two things at once:
+calls `Transcriber.cancel()`, which sets an atomic flag checked by whisper.cpp's `abort_callback` during inference
+(no JNI env upcall needed — see `WhisperHandle` in `whisper_jni.cpp`), interrupting the file that's transcribing
+*right now* rather than waiting for it to finish; and sets a stop-requested flag (`TranscriptionControl`) that
+stops the batch loop from starting the next file. The interrupted file keeps whatever partial transcript it had
+streamed in so far (it's accumulated incrementally via `new_segment_callback` as inference runs, not rebuilt from
+whisper.cpp's return value afterwards, which comes back empty on an aborted call) and is marked **Stopped** rather
+than *Done* or *Failed*; any files that hadn't started yet are marked **Stopped** too and left untouched on disk.
+There's no true pause/resume — whisper.cpp's inference call is synchronous with no mid-call suspension point to
+resume from, so once stopped a file has to be re-transcribed from the start if you want the rest of it.
+
+### Browsing saved transcripts
+
+**View saved transcripts** on the main screen opens a flat, most-recent-first list of every `.txt` file under
+`Android/data/com.whispertranscriber.app/files/transcripts/**` (both per-file transcripts and each batch's
+combined `all_transcripts.txt`), independent of whatever's currently loaded in the results list on the main
+screen. Tapping a file shows its full text with **Share**/**Close**.
+
 ## Project layout
 
 - `app/src/main/java/com/whispertranscriber/app/`
@@ -78,6 +100,9 @@ model size and download it on demand from Hugging Face the first time you need i
   - `TranscriptionService.kt` / `TranscriptionState.kt` — foreground service that owns the whole transcription
     batch (decode-ahead pipelining, whisper.cpp inference, writing finished transcripts to disk) plus the
     `StateFlow` the Activity observes; this is what survives the app being backgrounded overnight.
+  - `TranscriptionControl.kt` — lets the UI ask a running batch to stop: an atomic stop-requested flag checked
+    between files, plus a reference to whichever `Transcriber` is active so Stop can interrupt the file that's
+    transcribing right now instead of only taking effect between files.
   - `ModelManager.kt` — Whisper model download/storage; streams to a temp file, resumes via HTTP `Range` requests
     after a dropped connection, and only promotes the file once its full size is verified.
   - `UrlDownloader.kt` — streams a remote URL to a temp file for the URL mode.
@@ -85,14 +110,18 @@ model size and download it on demand from Hugging Face the first time you need i
   - `AudioDecoder.kt` — audio/video → 16 kHz mono float PCM decoding, with per-file progress from the container's
     duration.
   - `MediaSource.kt` / `TranscriptionResult.kt` / `ResultsAdapter.kt` — the batch queue and its results list.
-  - `WhisperLib.kt` / `Transcriber.kt` — Kotlin side of the JNI bridge, including the progress and live-segment
-    callbacks.
+  - `WhisperLib.kt` / `Transcriber.kt` — Kotlin side of the JNI bridge, including the progress/live-segment
+    callbacks and the chunk/thread-count math (`computeParallelism`) for `whisper_full_parallel()`.
+  - `TranscriptsActivity.kt` / `TranscriptFilesAdapter.kt` — browses already-written transcript `.txt` files.
 - `app/src/main/cpp/`
   - `CMakeLists.txt` — fetches whisper.cpp source via CMake `FetchContent` and builds it for Android (arm64-v8a,
     x86_64) with native CPU-detection disabled, since we're cross-compiling.
   - `whisper_jni.cpp` — the native `WhisperLib` implementation, calling whisper.cpp's public C API
-    (`whisper_init_from_file_with_params`, `whisper_full`, `whisper_full_get_segment_text`, …) and bridging its
-    `progress_callback`/`new_segment_callback` back into Kotlin listener interfaces.
+    (`whisper_init_from_file_with_params`, `whisper_full`/`whisper_full_parallel`, `whisper_full_get_segment_text`,
+    …) and bridging its `progress_callback`/`new_segment_callback`/`abort_callback` back to Kotlin. The Long
+    "context pointer" Kotlin holds actually points at a small `WhisperHandle` wrapping the real
+    `whisper_context*` alongside an `std::atomic<bool>` cancel flag, so `WhisperLib.requestCancel()` can interrupt
+    an in-flight call from another thread without a JNI env upcall.
 
 ## Testing
 
@@ -102,24 +131,30 @@ Two test suites gate every CI build; the APK artifact is only uploaded if both p
   needed, covering pure logic: media file extension matching (`MediaFileUtilsTest`), the Whisper
   model catalog's integrity — unique ids/filenames, well-formed URLs (`WhisperModelTest`), the PCM
   downmix/resample math (`AudioDecoderTest`), HTTP `Content-Range` header parsing
-  (`ContentRangeTest`), and the URL-to-file-extension guessing used for URL-mode downloads
-  (`UrlDownloaderTest`). A few originally-private helpers were made `internal` (or moved to
-  top-level functions, dropping an Android-only dependency like `android.net.Uri` in
+  (`ContentRangeTest`), the URL-to-file-extension guessing used for URL-mode downloads
+  (`UrlDownloaderTest`), and the chunk/thread-count math behind `whisper_full_parallel()`
+  (`TranscriberParallelismTest`) — including that total threads never exceed the core budget across
+  a spread of durations and core counts. A few originally-private helpers were made `internal` (or
+  moved to top-level functions, dropping an Android-only dependency like `android.net.Uri` in
   `UrlDownloader.guessExtension`) specifically so this pure logic is testable without a device.
 - **Instrumented tests** (`app/src/androidTest/`, run via `gradle connectedDebugAndroidTest` against
   an emulator in CI):
   - `MainActivitySmokeTest` launches the real `MainActivity` on a real Android runtime and asserts
     it reaches `RESUMED` without crashing, with the UI in the expected initial state (Transcribe
-    disabled, File mode selected, every model listed in the spinner). This exists because a JVM
-    unit test can't catch manifest/service-registration mistakes or runtime crashes — the Android
-    SDK's unit-test stub classes just throw "not implemented" if actually invoked, so they'd
-    happily "pass" past bugs that only show up on a real device.
+    disabled, File mode selected, every model listed in the spinner, version banner showing the
+    build, Stop hidden). This exists because a JVM unit test can't catch manifest/service-registration
+    mistakes or runtime crashes — the Android SDK's unit-test stub classes just throw "not
+    implemented" if actually invoked, so they'd happily "pass" past bugs that only show up on a real
+    device.
+  - `TranscriptsActivitySmokeTest` launches `TranscriptsActivity` against an empty transcripts
+    directory and asserts the empty-state message shows instead of crashing.
   - `TranscriptionEndToEndTest` actually runs the transcription pipeline: downloads the Tiny model,
     decodes a short bundled test clip (`app/src/androidTest/assets/test_audio.wav`), and calls
     `Transcriber.transcribe()` through the real JNI bridge — the one path the smoke test above
-    deliberately skips, and the one that let the `whisper_full_parallel()` hang (above) ship
-    unnoticed. It wraps the transcribe call in a hard 120-second timeout specifically so a hang
-    fails the build loudly instead of running forever, in CI or (as happened) on a real phone.
+    deliberately skips, and the one that let a previous `whisper_full_parallel()` hang ship
+    unnoticed. It wraps the transcribe call in a timeout (300s — CI's shared, 2-core, software-
+    rendered emulator is slow enough on its own that this needs slack above what a real device
+    would need) specifically so a genuine hang fails the build loudly instead of running forever.
 
 ```bash
 cd WhisperTranscriber

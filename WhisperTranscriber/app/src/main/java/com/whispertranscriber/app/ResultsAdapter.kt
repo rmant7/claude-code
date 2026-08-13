@@ -36,7 +36,7 @@ class ResultsAdapter(private val items: List<TranscriptionResult>) :
         holder.text.text = when (item.status) {
             TranscriptionResult.Status.ERROR ->
                 context.getString(R.string.transcribe_error, item.error ?: "")
-            TranscriptionResult.Status.DONE ->
+            TranscriptionResult.Status.DONE, TranscriptionResult.Status.CANCELLED ->
                 item.text.ifBlank { context.getString(R.string.no_speech_detected) }
             // Streamed in live via whisper.cpp's new_segment_callback as inference progresses,
             // so the transcript grows in place instead of appearing all at once at the end.
@@ -55,6 +55,7 @@ class ResultsAdapter(private val items: List<TranscriptionResult>) :
             TranscriptionResult.Status.TRANSCRIBING -> R.string.transcribing
             TranscriptionResult.Status.DONE -> R.string.status_done
             TranscriptionResult.Status.ERROR -> R.string.status_failed
+            TranscriptionResult.Status.CANCELLED -> R.string.status_cancelled
         }
         return context.getString(resId)
     }

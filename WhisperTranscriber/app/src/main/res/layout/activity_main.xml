@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
@@ -8,6 +9,18 @@
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:padding="16dp">
+
+        <TextView
+            android:id="@+id/versionBanner"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:background="#F0F0F0"
+            android:gravity="center"
+            android:padding="6dp"
+            android:textColor="#666666"
+            android:textSize="12sp"
+            tools:text="v1.0 (build 19)" />
 
         <TextView
             android:layout_width="wrap_content"
@@ -172,12 +185,35 @@
             android:layout_marginBottom="16dp"
             android:background="#DDDDDD" />
 
-        <Button
-            android:id="@+id/transcribeButton"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:enabled="false"
-            android:text="@string/transcribe" />
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/transcribeButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:enabled="false"
+                android:text="@string/transcribe" />
+
+            <Button
+                android:id="@+id/stopButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:layout_marginStart="8dp"
+                android:text="@string/stop"
+                android:visibility="gone" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/viewTranscriptsButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/view_transcripts" />
 
         <TextView
             android:id="@+id/batchProgressText"

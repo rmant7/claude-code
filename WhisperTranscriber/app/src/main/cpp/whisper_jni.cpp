@@ -1,5 +1,6 @@
 #include <jni.h>
 #include <android/log.h>
+#include <atomic>
 #include <string>
 
 #include "whisper.h"
@@ -7,6 +8,19 @@
 #define LOG_TAG "WhisperJNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+namespace {
+
+// The Long "context pointer" handed to Kotlin actually points at this handle rather than a bare
+// whisper_context*, so a Stop button can flip cancelRequested from the calling thread while
+// whisper_full()/whisper_full_parallel() is still running on a worker thread — checked cheaply
+// (no JNI upcall needed) by the abort_callback below.
+struct WhisperHandle {
+    struct whisper_context *ctx;
+    std::atomic<bool> cancelRequested{false};
+};
+
+} // namespace
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_whispertranscriber_app_WhisperLib_initContext(JNIEnv *env, jclass /*clazz*/, jstring modelPath) {
@@ -23,14 +37,23 @@ Java_com_whispertranscriber_app_WhisperLib_initContext(JNIEnv *env, jclass /*cla
         LOGE("Failed to initialize whisper context from model file");
         return 0;
     }
-    return reinterpret_cast<jlong>(ctx);
+    auto *handle = new WhisperHandle{ctx};
+    return reinterpret_cast<jlong>(handle);
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_whispertranscriber_app_WhisperLib_freeContext(JNIEnv *env, jclass /*clazz*/, jlong contextPtr) {
     if (contextPtr == 0) return;
-    auto *ctx = reinterpret_cast<struct whisper_context *>(contextPtr);
-    whisper_free(ctx);
+    auto *handle = reinterpret_cast<WhisperHandle *>(contextPtr);
+    whisper_free(handle->ctx);
+    delete handle;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_whispertranscriber_app_WhisperLib_requestCancel(JNIEnv *env, jclass /*clazz*/, jlong contextPtr) {
+    if (contextPtr == 0) return;
+    auto *handle = reinterpret_cast<WhisperHandle *>(contextPtr);
+    handle->cancelRequested.store(true);
 }
 
 namespace {
@@ -114,7 +137,11 @@ Java_com_whispertranscriber_app_WhisperLib_transcribe(JNIEnv *env, jclass /*claz
     if (contextPtr == 0) {
         return env->NewStringUTF("");
     }
-    auto *ctx = reinterpret_cast<struct whisper_context *>(contextPtr);
+    auto *handle = reinterpret_cast<WhisperHandle *>(contextPtr);
+    struct whisper_context *ctx = handle->ctx;
+    // The same handle (and its cancel flag) is reused across every file in a batch, so a Stop
+    // request from a previous file must not carry over and immediately abort the next one.
+    handle->cancelRequested.store(false);
 
     jsize numSamples = env->GetArrayLength(audioData);
     jfloat *samples = env->GetFloatArrayElements(audioData, nullptr);
@@ -132,6 +159,12 @@ Java_com_whispertranscriber_app_WhisperLib_transcribe(JNIEnv *env, jclass /*claz
     params.language = lang;
     params.n_threads = numThreads > 0 ? numThreads : 4;
     params.no_context = true;
+    // Checked periodically by whisper.cpp during inference so a Stop button actually interrupts a
+    // running transcription instead of only taking effect once the whole file finishes.
+    params.abort_callback = [](void *userData) {
+        return static_cast<std::atomic<bool> *>(userData)->load();
+    };
+    params.abort_callback_user_data = &handle->cancelRequested;
 
     jobject progressListenerGlobal = nullptr;
     ProgressCallbackContext progressContext{};

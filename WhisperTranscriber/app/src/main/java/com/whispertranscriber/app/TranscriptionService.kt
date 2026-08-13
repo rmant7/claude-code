@@ -102,14 +102,22 @@ class TranscriptionService : Service() {
 
         publish(results, 0, total)
         updateLoadingModelNotification()
+        TranscriptionControl.reset()
 
         try {
             Transcriber(modelFile.absolutePath).use { transcriber ->
+                TranscriptionControl.activeTranscriber = transcriber
                 // One-file lookahead: decode (fast, MediaCodec) overlaps with transcribing
                 // (slow, whisper.cpp inference) so decode time is hidden for every file but the first.
                 var pendingDecode: Deferred<Result<FloatArray>>? = decodeAsync(this, results, 0)
 
                 for ((index, result) in results.withIndex()) {
+                    if (TranscriptionControl.stopRequested.get()) {
+                        markRemainingCancelled(results, index)
+                        publish(results, index, total)
+                        break
+                    }
+
                     updateNotification(index, total, result.source.displayName)
 
                     val decodeResult = pendingDecode?.await()
@@ -123,7 +131,11 @@ class TranscriptionService : Service() {
                         result.text = ""
                         publish(results, index, total)
 
-                        val transcript = transcriber.transcribe(
+                        // The return value is ignored: it's rebuilt from the final segment list,
+                        // which comes back empty when abort_callback interrupts the call, wiping
+                        // out the partial transcript. result.text already has the same content
+                        // (and survives an abort) because onSegment appends to it incrementally.
+                        transcriber.transcribe(
                             samples,
                             onProgress = { percent ->
                                 result.progressPercent = percent
@@ -137,9 +149,13 @@ class TranscriptionService : Service() {
                                 synchronized(result) { result.text += segmentText }
                                 publish(results, index, total)
                             }
-                        ).trim()
-                        result.text = transcript
-                        result.status = TranscriptionResult.Status.DONE
+                        )
+                        result.text = result.text.trim()
+                        result.status = if (TranscriptionControl.stopRequested.get()) {
+                            TranscriptionResult.Status.CANCELLED
+                        } else {
+                            TranscriptionResult.Status.DONE
+                        }
                         result.progressPercent = 0
                         publish(results, index, total)
                         writeTranscriptFile(outputDir, index, result)
@@ -150,6 +166,12 @@ class TranscriptionService : Service() {
                         result.status = TranscriptionResult.Status.ERROR
                         publish(results, index, total)
                     }
+
+                    if (TranscriptionControl.stopRequested.get()) {
+                        markRemainingCancelled(results, index + 1)
+                        publish(results, index, total)
+                        break
+                    }
                 }
             }
         } catch (e: CancellationException) {
@@ -158,10 +180,20 @@ class TranscriptionService : Service() {
             // The model itself failed to load (e.g. a corrupted download) rather than a per-file
             // decode/transcribe error, which is already handled above.
             modelManager.deleteModel(model)
+        } finally {
+            TranscriptionControl.reset()
         }
 
         writeCombinedTranscriptFile(outputDir, results)
         TranscriptionState.update(TranscriptionState.Status.Finished(results.map { it.copy() }, outputDir.absolutePath))
+    }
+
+    private fun markRemainingCancelled(results: List<TranscriptionResult>, fromIndex: Int) {
+        for (i in fromIndex until results.size) {
+            if (results[i].status == TranscriptionResult.Status.PENDING) {
+                results[i].status = TranscriptionResult.Status.CANCELLED
+            }
+        }
     }
 
     private fun publish(results: List<TranscriptionResult>, currentIndex: Int, total: Int) {
@@ -211,7 +243,10 @@ class TranscriptionService : Service() {
 
     private fun writeCombinedTranscriptFile(outputDir: File, results: List<TranscriptionResult>) {
         val combined = results.joinToString("\n\n") { r ->
-            val body = if (r.status == TranscriptionResult.Status.DONE) r.text else "[${r.status}] ${r.error ?: ""}"
+            val body = when (r.status) {
+                TranscriptionResult.Status.DONE, TranscriptionResult.Status.CANCELLED -> r.text
+                else -> "[${r.status}] ${r.error ?: ""}"
+            }
             "${r.source.displayName}:\n$body"
         }
         runCatching { FileOutputStream(File(outputDir, "all_transcripts.txt")).use { it.write(combined.toByteArray()) } }

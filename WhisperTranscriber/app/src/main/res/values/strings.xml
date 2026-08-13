@@ -25,6 +25,8 @@
     <string name="folder_files_found">%1$d media file(s) found</string>
 
     <string name="transcribe">Transcribe</string>
+    <string name="stop">Stop</string>
+    <string name="stopping">Stopping…</string>
     <string name="transcribing">Transcribing…</string>
     <string name="batch_progress">File %1$d of %2$d</string>
     <string name="transcribing_notification">Transcribing %1$d of %2$d</string>
@@ -35,11 +37,19 @@
     <string name="status_decoding">Decoding audio…</string>
     <string name="status_done">Done</string>
     <string name="status_failed">Failed</string>
+    <string name="status_cancelled">Stopped</string>
     <string name="no_speech_detected">(No speech detected)</string>
     <string name="transcribe_error">Error: %1$s</string>
+    <string name="version_banner">v%1$s (build %2$s)</string>
 
     <string name="results_header">3. Results</string>
     <string name="copy_all">Copy all</string>
     <string name="share_all">Share all</string>
     <string name="copied">Copied to clipboard.</string>
+
+    <string name="view_transcripts">View saved transcripts</string>
+    <string name="transcripts_title">Saved transcripts</string>
+    <string name="no_transcripts_found">No saved transcripts yet.</string>
+    <string name="close">Close</string>
+    <string name="share">Share</string>
 </resources>

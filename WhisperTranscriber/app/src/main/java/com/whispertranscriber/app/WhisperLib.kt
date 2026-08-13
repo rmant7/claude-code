@@ -23,6 +23,10 @@ object WhisperLib {
     @JvmStatic
     external fun freeContext(contextPtr: Long)
 
+    /** Interrupts an in-flight [transcribe] call on this context as soon as whisper.cpp next checks. */
+    @JvmStatic
+    external fun requestCancel(contextPtr: Long)
+
     @JvmStatic
     external fun transcribe(
         contextPtr: Long,

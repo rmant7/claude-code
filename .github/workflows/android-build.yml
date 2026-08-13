@@ -47,7 +47,7 @@ jobs:
         run: gradle testDebugUnitTest --stacktrace --no-daemon
 
       - name: Build debug APK (app + instrumented test APK)
-        run: gradle assembleDebug assembleDebugAndroidTest --stacktrace --no-daemon
+        run: gradle assembleDebug assembleDebugAndroidTest -PbuildNumber=${{ github.run_number }} --stacktrace --no-daemon
 
       - name: Enable KVM group perms for the emulator
         run: |
@@ -65,7 +65,7 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          script: gradle connectedDebugAndroidTest --stacktrace --no-daemon
+          script: gradle connectedDebugAndroidTest -PbuildNumber=${{ github.run_number }} --stacktrace --no-daemon
 
       - name: Rename APK with version number
         run: |
