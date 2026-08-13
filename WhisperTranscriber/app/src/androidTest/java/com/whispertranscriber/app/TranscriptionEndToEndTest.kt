@@ -38,7 +38,7 @@ class TranscriptionEndToEndTest {
         }
         assertTrue("tiny model should be downloaded before transcribing", modelManager.isDownloaded(model))
 
-        val audioFile = copyTestAssetToCache(testContext, "test_audio.wav")
+        val audioFile = copyTestAssetToCache(testContext, targetContext, "test_audio.wav")
         val samples = AudioDecoder.decodeFromPath(audioFile.absolutePath)
         assertTrue("decoded audio should not be empty", samples.isNotEmpty())
 
@@ -60,9 +60,17 @@ class TranscriptionEndToEndTest {
         }
     }
 
-    private fun copyTestAssetToCache(context: android.content.Context, assetName: String): File {
-        val outFile = File(context.cacheDir, assetName)
-        context.assets.open(assetName).use { input ->
+    // The test APK's own cache dir (from assetContext) isn't guaranteed to exist on every device
+    // image — it hit a bare FileNotFoundException on the CI emulator — so the asset bytes are read
+    // from the test APK but written into the app-under-test's cache dir, which ModelManager already
+    // uses elsewhere in this same test and is therefore known to exist.
+    private fun copyTestAssetToCache(
+        assetContext: android.content.Context,
+        outputContext: android.content.Context,
+        assetName: String
+    ): File {
+        val outFile = File(outputContext.cacheDir, assetName)
+        assetContext.assets.open(assetName).use { input ->
             FileOutputStream(outFile).use { output -> input.copyTo(output) }
         }
         return outFile
