@@ -23,8 +23,14 @@ class TranscriptionEndToEndTest {
 
     @Test
     fun transcribesABundledClipWithoutHangingOrCrashing() {
-        val context = InstrumentationRegistry.getInstrumentation().targetContext
-        val modelManager = ModelManager(context)
+        // The app-under-test's context (for ModelManager/AudioDecoder, so this matches production
+        // behavior exactly) is NOT the same as the test APK's own context. Bundled androidTest
+        // assets live in the *test* APK, so reading "test_audio.wav" needs the instrumentation's
+        // own context — using targetContext here throws FileNotFoundException, since the app's
+        // APK never contains this file at all.
+        val targetContext = InstrumentationRegistry.getInstrumentation().targetContext
+        val testContext = InstrumentationRegistry.getInstrumentation().context
+        val modelManager = ModelManager(targetContext)
         val model = WhisperModel.ALL.first { it.id == "tiny" }
 
         if (!modelManager.isDownloaded(model)) {
@@ -32,7 +38,7 @@ class TranscriptionEndToEndTest {
         }
         assertTrue("tiny model should be downloaded before transcribing", modelManager.isDownloaded(model))
 
-        val audioFile = copyTestAssetToCache(context, "test_audio.wav")
+        val audioFile = copyTestAssetToCache(testContext, "test_audio.wav")
         val samples = AudioDecoder.decodeFromPath(audioFile.absolutePath)
         assertTrue("decoded audio should not be empty", samples.isNotEmpty())
 
