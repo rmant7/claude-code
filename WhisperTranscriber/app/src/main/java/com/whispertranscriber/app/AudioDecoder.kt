@@ -155,7 +155,9 @@ object AudioDecoder {
         }
     }
 
-    private fun downmixToMono(pcm: ShortArray, channels: Int): ShortArray {
+    // internal (not private) so unit tests can exercise this pure math directly, without needing
+    // a real MediaCodec/device to produce a ShortArray to feed it.
+    internal fun downmixToMono(pcm: ShortArray, channels: Int): ShortArray {
         val frames = pcm.size / channels
         val mono = ShortArray(frames)
         for (i in 0 until frames) {
@@ -166,7 +168,7 @@ object AudioDecoder {
         return mono
     }
 
-    private fun resample(input: FloatArray, fromRate: Int, toRate: Int): FloatArray {
+    internal fun resample(input: FloatArray, fromRate: Int, toRate: Int): FloatArray {
         if (fromRate == toRate || input.isEmpty()) return input
         val ratio = toRate.toDouble() / fromRate.toDouble()
         val outputLength = (input.size * ratio).toInt()

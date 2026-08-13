@@ -1,7 +1,6 @@
 package com.whispertranscriber.app
 
 import android.content.Context
-import android.net.Uri
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -41,11 +40,13 @@ object UrlDownloader {
         }
     }
 
-    private fun guessExtension(url: String, contentType: String?): String {
-        val path = Uri.parse(url).lastPathSegment ?: ""
-        val dot = path.lastIndexOf('.')
-        if (dot in 0 until path.length - 1) {
-            return "." + path.substring(dot + 1).substringBefore('?')
+    // internal + no android.net.Uri dependency (plain string parsing instead) so this pure logic
+    // is directly unit-testable on the JVM without needing a real Android runtime.
+    internal fun guessExtension(url: String, contentType: String?): String {
+        val lastSegment = url.substringBefore('?').substringBefore('#').substringAfterLast('/')
+        val dot = lastSegment.lastIndexOf('.')
+        if (dot in 0 until lastSegment.length - 1) {
+            return "." + lastSegment.substring(dot + 1)
         }
         return when {
             contentType?.contains("mp4") == true -> ".mp4"

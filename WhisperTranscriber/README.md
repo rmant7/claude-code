@@ -85,6 +85,34 @@ model size and download it on demand from Hugging Face the first time you need i
     (`whisper_init_from_file_with_params`, `whisper_full`, `whisper_full_get_segment_text`, …) and bridging its
     `progress_callback`/`new_segment_callback` back into Kotlin listener interfaces.
 
+## Testing
+
+Two test suites gate every CI build; the APK artifact is only uploaded if both pass.
+
+- **Unit tests** (`app/src/test/`, run via `gradle testDebugUnitTest`) — plain JVM tests, no device
+  needed, covering pure logic: media file extension matching (`MediaFileUtilsTest`), the Whisper
+  model catalog's integrity — unique ids/filenames, well-formed URLs (`WhisperModelTest`), the PCM
+  downmix/resample math (`AudioDecoderTest`), HTTP `Content-Range` header parsing
+  (`ContentRangeTest`), and the URL-to-file-extension guessing used for URL-mode downloads
+  (`UrlDownloaderTest`). A few originally-private helpers were made `internal` (or moved to
+  top-level functions, dropping an Android-only dependency like `android.net.Uri` in
+  `UrlDownloader.guessExtension`) specifically so this pure logic is testable without a device.
+- **Instrumented test** (`app/src/androidTest/`, run via `gradle connectedDebugAndroidTest` against
+  an emulator in CI) — `MainActivitySmokeTest` launches the real `MainActivity` on a real Android
+  runtime and asserts it reaches `RESUMED` without crashing, with the UI in the expected initial
+  state (Transcribe disabled, File mode selected, every model listed in the spinner). This exists
+  because a JVM unit test can't catch manifest/service-registration mistakes or runtime crashes —
+  the Android SDK's unit-test stub classes just throw "not implemented" if actually invoked, so
+  they'd happily "pass" past bugs that only show up on a real device. It deliberately does **not**
+  exercise the native whisper.cpp path (that needs a real model file and audio input, out of scope
+  for a lightweight launch smoke test) — that path is currently verified manually.
+
+```bash
+cd WhisperTranscriber
+gradle testDebugUnitTest                 # unit tests, fast, no device
+gradle connectedDebugAndroidTest         # instrumented test, needs a running emulator/device
+```
+
 ## Building locally
 
 Requires Android Studio (or the command line) with SDK 34, NDK `26.1.10909125`, and CMake `3.22.1` installed.

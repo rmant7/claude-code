@@ -132,16 +132,17 @@ class ModelManager(private val context: Context) {
         }
     }
 
-    private fun parseContentRangeTotal(headerValue: String?): Long? {
-        // Expected format: "bytes 1234-5678/9999"
-        val slashIndex = headerValue?.lastIndexOf('/') ?: return null
-        if (slashIndex < 0) return null
-        return headerValue.substring(slashIndex + 1).toLongOrNull()
-    }
-
     private companion object {
         const val MAX_CONSECUTIVE_FAILURES = 5
         const val INITIAL_BACKOFF_MS = 2_000L
         const val MAX_BACKOFF_MS = 30_000L
     }
+}
+
+/** Top-level (not a Context-requiring member) so it's easy to unit test in isolation. */
+internal fun parseContentRangeTotal(headerValue: String?): Long? {
+    // Expected format: "bytes 1234-5678/9999"
+    val slashIndex = headerValue?.lastIndexOf('/') ?: return null
+    if (slashIndex < 0) return null
+    return headerValue.substring(slashIndex + 1).toLongOrNull()
 }
