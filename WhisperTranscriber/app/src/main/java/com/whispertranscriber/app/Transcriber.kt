@@ -19,19 +19,20 @@ class Transcriber(modelPath: String) : Closeable {
     ): String {
         check(contextPtr != 0L) { "Transcriber already closed" }
 
-        // Splitting work across whisper.cpp's own whisper_full_parallel() (multiple native
-        // threads, each decoding a slice of the audio) gets real wall-clock speedups on
-        // multi-core phones — plain whisper_full() only parallelizes the matmuls inside a
-        // single pass, not across audio chunks. Below 4 cores the per-chunk overhead isn't
-        // worth it, so we fall back to a single processor.
-        val totalThreads = Runtime.getRuntime().availableProcessors().coerceIn(1, 8)
-        val numProcessors = if (totalThreads >= 4) 2 else 1
-        val threadsPerProcessor = (totalThreads / numProcessors).coerceAtLeast(1)
+        // whisper_full_parallel() (splitting one file's audio across native threads) was tried
+        // here for a wall-clock speedup on multi-core phones, but it was never actually verified
+        // on real hardware — only that it compiled — and a user hit a transcription that ran for
+        // 15+ minutes on a 0.5 MB file with no progress, which is consistent with a hang in that
+        // untested path (a plausible edge case: splitting very short audio into chunks). Forcing
+        // a single processor falls back to the well-tested, simple whisper_full() unconditionally
+        // until whisper_full_parallel can be verified not to do that.
+        val threads = Runtime.getRuntime().availableProcessors().coerceIn(1, 8)
+        val numProcessors = 1
 
         val progressListener = onProgress?.let { callback -> WhisperProgressListener { percent -> callback(percent) } }
         val segmentListener = onSegment?.let { callback -> WhisperSegmentListener { text -> callback(text) } }
         return WhisperLib.transcribe(
-            contextPtr, threadsPerProcessor, numProcessors, samples, language, progressListener, segmentListener
+            contextPtr, threads, numProcessors, samples, language, progressListener, segmentListener
         )
     }
 

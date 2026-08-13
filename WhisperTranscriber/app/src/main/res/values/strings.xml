@@ -28,6 +28,7 @@
     <string name="transcribing">Transcribing…</string>
     <string name="batch_progress">File %1$d of %2$d</string>
     <string name="transcribing_notification">Transcribing %1$d of %2$d</string>
+    <string name="loading_model_notification">Loading model…</string>
     <string name="transcription_notification_channel_name">Transcription</string>
     <string name="status_pending">Pending…</string>
     <string name="status_downloading_file">Downloading file…</string>

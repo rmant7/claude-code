@@ -101,6 +101,7 @@ class TranscriptionService : Service() {
         outputDir.mkdirs()
 
         publish(results, 0, total)
+        updateLoadingModelNotification()
 
         try {
             Transcriber(modelFile.absolutePath).use { transcriber ->
@@ -239,6 +240,17 @@ class TranscriptionService : Service() {
     private fun updateNotification(index: Int, total: Int, currentName: String) {
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(NOTIFICATION_ID, buildNotification(index, total, currentName))
+    }
+
+    /** Loading a large model can itself take a while; make that visible instead of looking stuck. */
+    private fun updateLoadingModelNotification() {
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(getString(R.string.loading_model_notification))
+            .setSmallIcon(android.R.drawable.ic_menu_recent_history)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification)
     }
 
     private fun createNotificationChannel() {

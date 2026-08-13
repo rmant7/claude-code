@@ -37,15 +37,16 @@ model size and download it on demand from Hugging Face the first time you need i
      webm, mkv, ts, …), since only the audio track is selected and video frames are never touched.
    - Downmixes to mono and resamples to 16 kHz, the format whisper.cpp expects.
    - Runs inference on-device through a small JNI bridge (`app/src/main/cpp/whisper_jni.cpp`) around whisper.cpp's C
-     API. The model is loaded **once** and reused across every file in a batch — this is also why files aren't
-     transcribed several-at-once: each loaded whisper.cpp context holds the model weights in RAM (e.g. ~1.5 GB for
-     Medium), so N files running fully in parallel would mean N full model loads, which would OOM on a typical
-     phone for anything above Tiny/Base. Instead, on devices with 4+ cores, inference uses whisper.cpp's
-     `whisper_full_parallel()` (2 processors, splitting *one* file's audio across native threads that share the
-     same loaded model) instead of single-threaded `whisper_full()` — a real wall-clock speedup without the memory
-     cost of extra model copies. Progress/segment callbacks resolve their own JNIEnv per-thread (attaching if
-     needed) via a cached `JavaVM`, since the extra native threads whisper_full_parallel() spawns can't reuse a
-     JNIEnv captured on a different thread — so live progress and streamed text work in both modes.
+     API, single-threaded (`whisper_full()`, using all CPU cores for the matrix math inside one pass). An earlier
+     version tried `whisper_full_parallel()` (splitting one file's audio across native threads) for extra wall-clock
+     speed on multi-core phones, but it was only ever verified to *compile* — never confirmed correct on a real
+     device — and a user hit a transcription that ran 15+ minutes on a 0.5 MB file with no progress at all, which is
+     consistent with that untested path hanging on a short clip. It's reverted pending real-device verification;
+     `TranscriptionEndToEndTest` (see Testing below) now exists specifically to catch a regression like that before
+     it ships again. The model is loaded **once** and reused across every file in a batch — this is also why files
+     aren't transcribed several-at-once: each loaded whisper.cpp context holds the model weights in RAM (e.g. ~1.5 GB
+     for Medium), so N files running fully in parallel would mean N full model loads, which would OOM on a typical
+     phone for anything above Tiny/Base.
    - In a multi-file batch, the next file's audio is decoded in the background while the current file is being
      transcribed (a one-item lookahead), so decode time is fully hidden for every file but the first — decoding
      via `MediaCodec` is normally much faster than whisper.cpp inference, so this (rather than chunking a single
@@ -97,20 +98,25 @@ Two test suites gate every CI build; the APK artifact is only uploaded if both p
   (`UrlDownloaderTest`). A few originally-private helpers were made `internal` (or moved to
   top-level functions, dropping an Android-only dependency like `android.net.Uri` in
   `UrlDownloader.guessExtension`) specifically so this pure logic is testable without a device.
-- **Instrumented test** (`app/src/androidTest/`, run via `gradle connectedDebugAndroidTest` against
-  an emulator in CI) — `MainActivitySmokeTest` launches the real `MainActivity` on a real Android
-  runtime and asserts it reaches `RESUMED` without crashing, with the UI in the expected initial
-  state (Transcribe disabled, File mode selected, every model listed in the spinner). This exists
-  because a JVM unit test can't catch manifest/service-registration mistakes or runtime crashes —
-  the Android SDK's unit-test stub classes just throw "not implemented" if actually invoked, so
-  they'd happily "pass" past bugs that only show up on a real device. It deliberately does **not**
-  exercise the native whisper.cpp path (that needs a real model file and audio input, out of scope
-  for a lightweight launch smoke test) — that path is currently verified manually.
+- **Instrumented tests** (`app/src/androidTest/`, run via `gradle connectedDebugAndroidTest` against
+  an emulator in CI):
+  - `MainActivitySmokeTest` launches the real `MainActivity` on a real Android runtime and asserts
+    it reaches `RESUMED` without crashing, with the UI in the expected initial state (Transcribe
+    disabled, File mode selected, every model listed in the spinner). This exists because a JVM
+    unit test can't catch manifest/service-registration mistakes or runtime crashes — the Android
+    SDK's unit-test stub classes just throw "not implemented" if actually invoked, so they'd
+    happily "pass" past bugs that only show up on a real device.
+  - `TranscriptionEndToEndTest` actually runs the transcription pipeline: downloads the Tiny model,
+    decodes a short bundled test clip (`app/src/androidTest/assets/test_audio.wav`), and calls
+    `Transcriber.transcribe()` through the real JNI bridge — the one path the smoke test above
+    deliberately skips, and the one that let the `whisper_full_parallel()` hang (above) ship
+    unnoticed. It wraps the transcribe call in a hard 120-second timeout specifically so a hang
+    fails the build loudly instead of running forever, in CI or (as happened) on a real phone.
 
 ```bash
 cd WhisperTranscriber
 gradle testDebugUnitTest                 # unit tests, fast, no device
-gradle connectedDebugAndroidTest         # instrumented test, needs a running emulator/device
+gradle connectedDebugAndroidTest         # instrumented tests, needs a running emulator/device
 ```
 
 ## Building locally
@@ -126,9 +132,11 @@ The debug APK is produced at `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Building via GitHub Actions
 
-Every push that touches this directory triggers `.github/workflows/android-build.yml`, which builds a debug APK and
-uploads it as a workflow artifact named `whisper-transcriber-debug-apk`. Download it from the run's **Summary** page
-under **Artifacts**. You can also trigger it manually from the **Actions** tab (`workflow_dispatch`).
+Every push that touches this directory triggers `.github/workflows/android-build.yml`, which runs both test suites
+above, and — only if they pass — builds a debug APK and uploads it as a workflow artifact named
+`whisper_debug_<run number>` (containing `whisper_debug_<run number>.apk`). Download it from the run's **Summary**
+page under **Artifacts**. You can also trigger it manually from the **Actions** tab (`workflow_dispatch`). On
+failure, `test-reports_<run number>` is uploaded instead with the JUnit/instrumented test HTML reports.
 
 ## Notes & limitations
 
