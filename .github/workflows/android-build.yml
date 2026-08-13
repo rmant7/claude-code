@@ -13,6 +13,9 @@ on:
       - 'WhisperTranscriber/**'
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -78,6 +81,19 @@ jobs:
           name: whisper_debug_${{ github.run_number }}
           path: WhisperTranscriber/app/build/outputs/apk/debug/whisper_debug_${{ github.run_number }}.apk
           if-no-files-found: error
+
+      - name: Publish release with APK
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: whisper-debug-latest
+          name: Whisper Transcriber debug APK (latest build)
+          body: |
+            Automatically built debug APK from commit ${{ github.sha }} (build ${{ github.run_number }}).
+            Download `whisper_debug_${{ github.run_number }}.apk` below directly — this is a GitHub
+            Release asset, not an Actions artifact, so it downloads as a plain .apk with no zip step.
+          files: WhisperTranscriber/app/build/outputs/apk/debug/whisper_debug_${{ github.run_number }}.apk
+          make_latest: true
 
       - name: Upload test reports (only on failure)
         if: failure()

@@ -176,10 +176,16 @@ The debug APK is produced at `app/build/outputs/apk/debug/app-debug.apk`.
 ## Building via GitHub Actions
 
 Every push that touches this directory triggers `.github/workflows/android-build.yml`, which runs both test suites
-above, and — only if they pass — builds a debug APK and uploads it as a workflow artifact named
-`whisper_debug_<run number>` (containing `whisper_debug_<run number>.apk`). Download it from the run's **Summary**
-page under **Artifacts**. You can also trigger it manually from the **Actions** tab (`workflow_dispatch`). On
-failure, `test-reports_<run number>` is uploaded instead with the JUnit/instrumented test HTML reports.
+above, and — only if they pass — builds a debug APK and publishes it two ways:
+- As a workflow artifact named `whisper_debug_<run number>` (containing `whisper_debug_<run number>.apk`) —
+  from the run's **Summary** page under **Artifacts**. GitHub always wraps Actions artifacts in a zip on download,
+  even for a single file.
+- As a GitHub Release asset on the rolling `whisper-debug-latest` tag (updated on every build, `make_latest: true`)
+  — a direct link to `whisper_debug_<run number>.apk` under the repo's **Releases**, no zip involved, since Release
+  assets download as the raw file. Skipped for `pull_request`-triggered runs (no write token there).
+
+You can also trigger the workflow manually from the **Actions** tab (`workflow_dispatch`). On failure,
+`test-reports_<run number>` is uploaded instead with the JUnit/instrumented test HTML reports.
 
 ## Notes & limitations
 
