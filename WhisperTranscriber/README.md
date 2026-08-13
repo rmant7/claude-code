@@ -23,7 +23,15 @@ model size and download it on demand from Hugging Face the first time you need i
    - **URL** — paste a direct link to a remote audio/video file; the app downloads it to a temp file first.
    - **Folder** — pick a directory (via Storage Access Framework); the app recursively scans it for every
      recognized audio/video file and queues them all.
-3. Tap **Transcribe**. For every queued item the app:
+3. Tap **Transcribe**. The whole batch runs in `TranscriptionService`, a **foreground service** with a progress
+   notification — same reasoning as the model download service: a batch tied only to the Activity's lifecycle was
+   getting killed by the OS once the app was backgrounded for a while, which for a quick single file went unnoticed
+   but silently lost hours of progress on an overnight multi-hundred-file folder batch, with nothing to show for it
+   afterwards. Every finished transcript is also written to disk immediately as its own `.txt` file (plus a combined
+   `all_transcripts.txt`) under `Android/data/com.whispertranscriber.app/files/transcripts/<timestamp>/`, so even in
+   the worst case — the process gets killed anyway — whatever finished before that point is safely on disk rather
+   than lost. Reopening the app re-attaches to the service's live progress (or its finished results) instead of
+   showing a blank slate. For every queued item the app:
    - Extracts and decodes the audio track using Android's built-in `MediaExtractor`/`MediaCodec` — this works for
      plain audio containers (mp3, wav, m4a/aac, flac, ogg/opus, amr, …) as well as video containers (mp4, mov, 3gp,
      webm, mkv, ts, …), since only the audio track is selected and video frames are never touched.
@@ -53,10 +61,14 @@ model size and download it on demand from Hugging Face the first time you need i
 ## Project layout
 
 - `app/src/main/java/com/whispertranscriber/app/`
-  - `MainActivity.kt` — UI and orchestration across the File / URL / Folder modes; pipelines decode-ahead with
-    transcription for multi-file batches.
+  - `MainActivity.kt` — UI: starts a batch on `TranscriptionService` and observes `TranscriptionState`/
+    `ModelDownloadState` to reflect whatever those foreground services are doing, rather than running any of that
+    work itself.
   - `ModelDownloadService.kt` / `ModelDownloadState.kt` — foreground service that owns the model download (so it
     survives backgrounding) plus the in-process `StateFlow` the Activity observes for progress/completion.
+  - `TranscriptionService.kt` / `TranscriptionState.kt` — foreground service that owns the whole transcription
+    batch (decode-ahead pipelining, whisper.cpp inference, writing finished transcripts to disk) plus the
+    `StateFlow` the Activity observes; this is what survives the app being backgrounded overnight.
   - `ModelManager.kt` — Whisper model download/storage; streams to a temp file, resumes via HTTP `Range` requests
     after a dropped connection, and only promotes the file once its full size is verified.
   - `UrlDownloader.kt` — streams a remote URL to a temp file for the URL mode.
@@ -102,9 +114,16 @@ under **Artifacts**. You can also trigger it manually from the **Actions** tab (
   `OutOfMemoryError`, which is an `Error` rather than an `Exception` in Kotlin/Java and used to slip past a
   narrower `catch (e: Exception)`, silently killing the whole batch partway through instead of just failing that
   one file. `android:largeHeap="true"` is also set to give large files more headroom before hitting that ceiling.
-- Model downloads run in a foreground service and survive backgrounding. Transcription batches do not (yet) — they
-  still run on a coroutine tied to the Activity's lifecycle, so a batch is interrupted if the app process is killed
-  while backgrounded. Worth moving to a foreground service too if long unattended batches become a common case.
+- Both model downloads and transcription batches run in foreground services and survive the app being backgrounded.
+  A foreground service is *much* less likely to be killed by the OS than a plain background process, but on very
+  long batches (many hours) under sustained memory pressure it isn't an absolute guarantee — the per-file disk
+  writes exist specifically so that outcome only costs you the files after the interruption, not the whole batch.
+  There's also no resume-from-where-it-left-off yet if that does happen; re-running the folder just starts over
+  (already-written `.txt` files for finished items are simply overwritten by matching output, so nothing is lost,
+  just redone).
+- Android 15 (API 35) imposes a rolling execution-time cap on `dataSync`/`mediaProcessing` foreground services, but
+  only for apps that target API 35+; this app targets API 34, so it isn't subject to that cap even when running on
+  an API 35 device. Worth revisiting if `targetSdk` is ever bumped to 35.
 - Native ABIs are limited to `arm64-v8a` and `x86_64` (covers virtually all real devices from the last several years,
   plus the emulator). Add `armeabi-v7a` to `abiFilters` in `app/build.gradle.kts` if you need 32-bit ARM support.
 - The CI build fetches whisper.cpp source directly from GitHub at build time (`GIT_TAG master`); pin it to a specific

@@ -25,13 +25,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.whispertranscriber.app.databinding.ActivityMainBinding
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
 
@@ -42,6 +36,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var resultsAdapter: ResultsAdapter
 
     private val results = mutableListOf<TranscriptionResult>()
+    private var batchRunning = false
 
     private var currentMode = Mode.FILE
     private var selectedFileUri: Uri? = null
@@ -53,6 +48,7 @@ class MainActivity : AppCompatActivity() {
 
     private val pickFileLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
+            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
             selectedFileUri = uri
             selectedFileName = uri.lastPathSegment ?: uri.toString()
             binding.selectedFileText.text = selectedFileName
@@ -72,7 +68,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val notificationPermissionLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* download proceeds either way */ }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* work proceeds either way */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -85,6 +81,7 @@ class MainActivity : AppCompatActivity() {
         setUpSourceModeSwitcher()
         setUpResultsList()
         observeDownloadState()
+        observeTranscriptionState()
 
         binding.downloadButton.setOnClickListener { startModelDownload() }
         binding.deleteButton.setOnClickListener {
@@ -176,6 +173,59 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Reflects [TranscriptionService]'s progress. Because the batch runs in a foreground service
+     * rather than a coroutine tied to this Activity, reopening the app after it was backgrounded
+     * (even overnight) re-attaches to whatever the service has already published instead of
+     * finding a blank slate.
+     */
+    private fun observeTranscriptionState() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                TranscriptionState.status.collect { status ->
+                    when (status) {
+                        TranscriptionState.Status.Idle -> {
+                            batchRunning = false
+                            updateTranscribeButtonState()
+                        }
+
+                        is TranscriptionState.Status.Running -> {
+                            batchRunning = true
+                            results.clear()
+                            results.addAll(status.results)
+                            resultsAdapter.notifyDataSetChanged()
+
+                            binding.resultsSection.visibility = View.VISIBLE
+                            binding.batchProgressText.visibility = View.VISIBLE
+                            binding.batchProgressText.text =
+                                getString(R.string.batch_progress, status.currentIndex + 1, status.total)
+                            binding.transcribeProgressBar.visibility = View.VISIBLE
+                            binding.transcribeProgressBar.progress = (status.currentIndex * 100) / status.total
+                            binding.copyAllButton.isEnabled = false
+                            binding.shareAllButton.isEnabled = false
+                            updateTranscribeButtonState()
+                        }
+
+                        is TranscriptionState.Status.Finished -> {
+                            batchRunning = false
+                            results.clear()
+                            results.addAll(status.results)
+                            resultsAdapter.notifyDataSetChanged()
+
+                            binding.resultsSection.visibility = View.VISIBLE
+                            binding.batchProgressText.visibility = View.GONE
+                            binding.transcribeProgressBar.visibility = View.GONE
+                            val anyDone = status.results.any { it.status == TranscriptionResult.Status.DONE }
+                            binding.copyAllButton.isEnabled = anyDone
+                            binding.shareAllButton.isEnabled = anyDone
+                            updateTranscribeButtonState()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private fun refreshModelStatus() {
         val downloaded = modelManager.isDownloaded(selectedModel)
         binding.modelStatusText.text = getString(
@@ -193,18 +243,12 @@ class MainActivity : AppCompatActivity() {
             Mode.URL -> binding.urlInput.text?.toString()?.isNotBlank() == true
             Mode.FOLDER -> selectedFolderFiles.isNotEmpty()
         }
-        binding.transcribeButton.isEnabled = modelReady && hasSource
+        binding.transcribeButton.isEnabled = modelReady && hasSource && !batchRunning
     }
 
     private fun startModelDownload() {
         val model = selectedModel
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
+        requestNotificationPermissionIfNeeded()
 
         binding.downloadButton.isEnabled = false
         binding.downloadProgressBar.visibility = View.VISIBLE
@@ -212,159 +256,44 @@ class MainActivity : AppCompatActivity() {
         ModelDownloadService.start(applicationContext, model)
     }
 
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     private fun onTranscribeClicked() {
-        val sources: List<MediaSource> = when (currentMode) {
-            Mode.FILE -> selectedFileUri?.let { listOf(MediaSource.LocalFile(it, selectedFileName)) }.orEmpty()
+        val model = selectedModel
+        requestNotificationPermissionIfNeeded()
+
+        when (currentMode) {
+            Mode.FILE -> {
+                val uri = selectedFileUri ?: return
+                TranscriptionService.startForFiles(
+                    applicationContext, model, listOf(MediaSource.LocalFile(uri, selectedFileName))
+                )
+            }
 
             Mode.URL -> {
                 val url = binding.urlInput.text?.toString()?.trim().orEmpty()
-                if (url.isNotBlank()) listOf(MediaSource.RemoteUrl(url)) else emptyList()
+                if (url.isBlank()) return
+                TranscriptionService.startForUrl(applicationContext, model, url)
             }
 
-            Mode.FOLDER -> selectedFolderFiles.map { doc ->
-                MediaSource.LocalFile(doc.uri, doc.name ?: doc.uri.lastPathSegment ?: "file")
+            Mode.FOLDER -> {
+                if (selectedFolderFiles.isEmpty()) return
+                val sources = selectedFolderFiles.map { doc ->
+                    MediaSource.LocalFile(doc.uri, doc.name ?: doc.uri.lastPathSegment ?: "file")
+                }
+                TranscriptionService.startForFiles(applicationContext, model, sources)
             }
         }
 
-        if (sources.isNotEmpty()) runBatch(sources)
-    }
-
-    private fun runBatch(sources: List<MediaSource>) {
-        val model = selectedModel
-        val modelFile = modelManager.modelFile(model)
-
-        results.clear()
-        results.addAll(sources.map { TranscriptionResult(it) })
-        resultsAdapter.notifyDataSetChanged()
-
-        binding.resultsSection.visibility = View.VISIBLE
-        binding.copyAllButton.isEnabled = false
-        binding.shareAllButton.isEnabled = false
-        binding.transcribeButton.isEnabled = false
-        binding.batchProgressText.visibility = View.VISIBLE
-        binding.transcribeProgressBar.visibility = View.VISIBLE
-        binding.transcribeProgressBar.progress = 0
-
-        val total = results.size
-
-        lifecycleScope.launch(Dispatchers.Default) {
-            try {
-                Transcriber(modelFile.absolutePath).use { transcriber ->
-                    // Decoding (MediaCodec) is normally much faster than whisper.cpp inference,
-                    // so a one-file lookahead is enough to fully hide decode latency for every
-                    // file but the first: while file N is being transcribed, file N+1's audio is
-                    // already being decoded in the background instead of only starting afterwards.
-                    var pendingDecode: Deferred<Result<FloatArray>>? = decodeAsync(this, 0)
-
-                    for ((index, result) in results.withIndex()) {
-                        withContext(Dispatchers.Main) {
-                            binding.batchProgressText.text = getString(R.string.batch_progress, index + 1, total)
-                            binding.transcribeProgressBar.progress = (index * 100) / total
-                        }
-
-                        val decodeResult = pendingDecode?.await()
-                        pendingDecode = decodeAsync(this, index + 1)
-
-                        try {
-                            val samples = checkNotNull(decodeResult).getOrThrow()
-
-                            setStatus(result, TranscriptionResult.Status.TRANSCRIBING)
-                            result.text = ""
-                            val transcript = transcriber.transcribe(
-                                samples,
-                                onProgress = { percent -> reportProgress(result, percent) },
-                                onSegment = { segmentText ->
-                                    result.text += segmentText
-                                    runOnUiThread { resultsAdapter.notifyDataSetChanged() }
-                                }
-                            ).trim()
-                            result.text = transcript
-                            setStatus(result, TranscriptionResult.Status.DONE)
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Throwable) {
-                            // Catching Throwable (not just Exception) matters here: a single
-                            // outsized file can throw OutOfMemoryError decoding into one big PCM
-                            // buffer, and that's an Error, not an Exception — letting it through
-                            // used to kill this whole coroutine silently partway through a batch
-                            // instead of just failing that one file and moving on.
-                            result.error = "${e.javaClass.simpleName}: ${e.message ?: "no message"}"
-                            setStatus(result, TranscriptionResult.Status.ERROR)
-                        }
-
-                        withContext(Dispatchers.Main) {
-                            binding.transcribeProgressBar.progress = ((index + 1) * 100) / total
-                        }
-                    }
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                // The model itself failed to load (e.g. a corrupted download) rather than a
-                // per-file decode/transcribe error, which is already handled above. Drop the
-                // bad file so the UI reflects "not downloaded" and a retry can succeed.
-                modelManager.deleteModel(model)
-                withContext(Dispatchers.Main) {
-                    refreshModelStatus()
-                    val message = getString(
-                        R.string.transcribe_error,
-                        "${e.javaClass.simpleName}: ${e.message ?: "no message"}"
-                    )
-                    Toast.makeText(this@MainActivity, message, Toast.LENGTH_LONG).show()
-                }
-            }
-
-            withContext(Dispatchers.Main) {
-                binding.batchProgressText.visibility = View.GONE
-                binding.transcribeProgressBar.visibility = View.GONE
-                binding.transcribeButton.isEnabled = true
-                val anyDone = results.any { it.status == TranscriptionResult.Status.DONE }
-                binding.copyAllButton.isEnabled = anyDone
-                binding.shareAllButton.isEnabled = anyDone
-            }
-        }
-    }
-
-    /** Launches decoding of results[index] in the background, or null if there's no such item. */
-    private fun decodeAsync(scope: CoroutineScope, index: Int): Deferred<Result<FloatArray>>? {
-        if (index !in results.indices) return null
-        val result = results[index]
-        return scope.async(Dispatchers.Default) { runCatching { decodeSource(result) } }
-    }
-
-    private suspend fun decodeSource(result: TranscriptionResult): FloatArray {
-        return when (val source = result.source) {
-            is MediaSource.LocalFile -> {
-                setStatus(result, TranscriptionResult.Status.DECODING)
-                AudioDecoder.decodeToPcm16k(applicationContext, source.uri) { percent ->
-                    reportProgress(result, percent)
-                }
-            }
-
-            is MediaSource.RemoteUrl -> {
-                setStatus(result, TranscriptionResult.Status.DOWNLOADING)
-                val file = UrlDownloader.download(applicationContext, source.url)
-                try {
-                    setStatus(result, TranscriptionResult.Status.DECODING)
-                    AudioDecoder.decodeFromPath(file.absolutePath) { percent ->
-                        reportProgress(result, percent)
-                    }
-                } finally {
-                    file.delete()
-                }
-            }
-        }
-    }
-
-    private fun reportProgress(result: TranscriptionResult, percent: Int) {
-        result.progressPercent = percent
-        runOnUiThread { resultsAdapter.notifyDataSetChanged() }
-    }
-
-    private suspend fun setStatus(result: TranscriptionResult, status: TranscriptionResult.Status) {
-        result.status = status
-        result.progressPercent = 0
-        withContext(Dispatchers.Main) { resultsAdapter.notifyDataSetChanged() }
+        batchRunning = true
+        updateTranscribeButtonState()
     }
 
     private fun buildCombinedText(): String =
