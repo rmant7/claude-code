@@ -37,13 +37,21 @@ model size and download it on demand from Hugging Face the first time you need i
      webm, mkv, ts, …), since only the audio track is selected and video frames are never touched.
    - Downmixes to mono and resamples to 16 kHz, the format whisper.cpp expects.
    - Runs inference on-device through a small JNI bridge (`app/src/main/cpp/whisper_jni.cpp`) around whisper.cpp's C
-     API, single-threaded (`whisper_full()`, using all CPU cores for the matrix math inside one pass). An earlier
-     version tried `whisper_full_parallel()` (splitting one file's audio across native threads) for extra wall-clock
-     speed on multi-core phones, but it was only ever verified to *compile* — never confirmed correct on a real
-     device — and a user hit a transcription that ran 15+ minutes on a 0.5 MB file with no progress at all, which is
-     consistent with that untested path hanging on a short clip. It's reverted pending real-device verification;
-     `TranscriptionEndToEndTest` (see Testing below) now exists specifically to catch a regression like that before
-     it ships again. The model is loaded **once** and reused across every file in a batch — this is also why files
+     API, single-threaded (`whisper_full()`, using up to 4 CPU cores for the matrix math inside one pass — capped
+     below the device's full core count on purpose, see below). An earlier version tried `whisper_full_parallel()`
+     (splitting one file's audio across native threads) for extra wall-clock speed on multi-core phones, but it was
+     only ever verified to *compile* — never confirmed correct on a real device — and a user hit a transcription
+     that ran 15+ minutes on a 0.5 MB file with no progress at all, which is consistent with that untested path
+     hanging on a short clip. It's reverted pending real-device verification; `TranscriptionEndToEndTest` (see
+     Testing below) now exists specifically to catch a regression like that before it ships again. Separately, the
+     same user saw a several-minute call recording still under 50% transcribed after multiple hours — orders of
+     magnitude slower than expected for that little audio, and consistent with mobile thermal throttling: pinning
+     every core at 100% for many sustained minutes is exactly the load pattern that makes a phone clock itself down
+     progressively, so the longer a file runs the slower it gets. The thread count used for inference is now capped
+     at 4 (`Transcriber.kt`) rather than the device's full core count, trading a bit of best-case throughput for
+     staying further from that throttling cliff on long-running batches — unverified on real hardware like the
+     rest of this paragraph, since reproducing sustained thermal behavior isn't practical in CI. The model is loaded
+     **once** and reused across every file in a batch — this is also why files
      aren't transcribed several-at-once: each loaded whisper.cpp context holds the model weights in RAM (e.g. ~1.5 GB
      for Medium), so N files running fully in parallel would mean N full model loads, which would OOM on a typical
      phone for anything above Tiny/Base.

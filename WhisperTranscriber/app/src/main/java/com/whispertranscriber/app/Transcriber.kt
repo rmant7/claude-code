@@ -26,8 +26,16 @@ class Transcriber(modelPath: String) : Closeable {
         // untested path (a plausible edge case: splitting very short audio into chunks). Forcing
         // a single processor falls back to the well-tested, simple whisper_full() unconditionally
         // until whisper_full_parallel can be verified not to do that.
-        val threads = Runtime.getRuntime().availableProcessors().coerceIn(1, 8)
         val numProcessors = 1
+
+        // Pinning every core at 100% for the many minutes a longer file needs is exactly the kind
+        // of sustained load that triggers mobile thermal throttling — the same user saw a 0.5 MB
+        // call recording (a few minutes of audio) still under 50% after hours, consistent with the
+        // phone clocking itself down progressively the longer it runs flat-out. Capping to a more
+        // moderate thread count trades a bit of best-case throughput for not falling off that
+        // throttling cliff on long-running batches, which matters far more for the "hundreds of
+        // files over a few hours" use case than shaving seconds off one short file.
+        val threads = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
 
         val progressListener = onProgress?.let { callback -> WhisperProgressListener { percent -> callback(percent) } }
         val segmentListener = onSegment?.let { callback -> WhisperSegmentListener { text -> callback(text) } }
