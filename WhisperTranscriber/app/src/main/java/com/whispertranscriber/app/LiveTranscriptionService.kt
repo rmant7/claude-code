@@ -45,6 +45,12 @@ class LiveTranscriptionService : Service() {
     private var silentSamples = 0
     private var voicedSamples = 0
 
+    // Running estimate of ambient noise, only updated on blocks judged silent (a raised voice
+    // mid-utterance must not get folded into what counts as "quiet"). Starts high rather than 0 so
+    // the very first couple of blocks — before there has been any silence to calibrate against —
+    // don't get misread as loud just because the initial estimate was an unrealistic zero.
+    private var noiseFloor = 0.001f
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -99,6 +105,7 @@ class LiveTranscriptionService : Service() {
 
         Transcriber(modelFile.absolutePath).use { transcriber ->
             LiveTranscriptionState.update { it.copy(isLoadingModel = false) }
+            noiseFloor = 0.001f
             recorder.start()
 
             val reader = serviceScope.launch(Dispatchers.IO) {
@@ -174,20 +181,30 @@ class LiveTranscriptionService : Service() {
     private fun appendBlock(block: FloatArray) {
         val energy = MicrophoneRecorder.meanSquare(block)
         synchronized(bufferLock) {
+            val voiced = MicrophoneRecorder.isVoiced(energy, noiseFloor)
+
             // Leading silence is skipped entirely: buffering it would push real speech out of the
-            // capped window and make whisper transcribe mostly-empty audio.
-            if (voicedSamples == 0 && energy < SILENCE_ENERGY) return
+            // capped window and make whisper transcribe mostly-empty audio. Only calibrate the
+            // noise floor from blocks before any speech has started, not from pauses mid-sentence —
+            // by then the room's actual ambient level is already known, and pulling the floor
+            // toward whatever's happening now would make it drift.
+            if (!voiced) {
+                if (voicedSamples == 0) {
+                    noiseFloor += (energy - noiseFloor) * MicrophoneRecorder.NOISE_FLOOR_EMA_ALPHA
+                    return
+                }
+            }
 
             val grown = FloatArray(utterance.size + block.size)
             utterance.copyInto(grown)
             block.copyInto(grown, utterance.size)
             utterance = grown
 
-            if (energy < SILENCE_ENERGY) {
-                silentSamples += block.size
-            } else {
+            if (voiced) {
                 silentSamples = 0
                 voicedSamples += block.size
+            } else {
+                silentSamples += block.size
             }
         }
     }
@@ -243,12 +260,6 @@ class LiveTranscriptionService : Service() {
 
         /** Roughly 0.8s of quiet ends an utterance — long enough not to cut mid-sentence pauses. */
         private const val SILENCE_SAMPLES_TO_FINALIZE = MicrophoneRecorder.SAMPLE_RATE * 4 / 5
-
-        /**
-         * Mean-square energy below which a block counts as silence. Empirical: normal speech sits
-         * orders of magnitude above this, while room tone and mic self-noise sit below it.
-         */
-        private const val SILENCE_ENERGY = 0.0004f
 
         fun start(context: Context, model: WhisperModel, language: String) {
             val intent = Intent(context, LiveTranscriptionService::class.java)

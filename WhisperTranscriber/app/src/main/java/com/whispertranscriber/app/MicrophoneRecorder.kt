@@ -74,7 +74,7 @@ class MicrophoneRecorder {
 
         /**
          * Mean-square energy of a block, used as a crude voice-activity signal: a run of blocks
-         * below the silence threshold marks the end of an utterance. Deliberately simple — a real
+         * below the ambient noise floor marks the end of an utterance. Deliberately simple — a real
          * VAD would be better, but energy is enough to decide "has the speaker paused", and it
          * costs nothing next to inference.
          */
@@ -84,5 +84,33 @@ class MicrophoneRecorder {
             for (s in samples) sum += s.toDouble() * s
             return (sum / samples.size).toFloat()
         }
+
+        /**
+         * Whether [energy] counts as voice relative to [noiseFloor] (a running estimate of ambient
+         * room noise, updated by the caller during quiet blocks). A *fixed* absolute energy
+         * threshold was tried first and never actually worked: real speech level depends heavily on
+         * mic gain, distance from the phone, and the room, so any single constant is either too
+         * high (real speech never trips it — silently discarding all audio, which is exactly what
+         * happened) or too low (constant false triggers in a noisy room). Comparing against a
+         * *measured* noise floor adapts to whatever the actual device and environment are, instead
+         * of guessing a number with no microphone to test it against.
+         */
+        internal fun isVoiced(energy: Float, noiseFloor: Float): Boolean {
+            val floor = noiseFloor.coerceAtLeast(MIN_NOISE_FLOOR)
+            return energy > floor * VOICE_ENERGY_MULTIPLIER
+        }
+
+        /** Smoothing for the running noise-floor estimate; only updated on blocks judged silent. */
+        const val NOISE_FLOOR_EMA_ALPHA = 0.2f
+
+        // How many times louder than ambient noise a block must be to count as speech. Kept low
+        // enough to catch soft speech, high enough that normal mic self-noise/room hum doesn't
+        // spuriously trigger it.
+        private const val VOICE_ENERGY_MULTIPLIER = 4f
+
+        // Floor under the floor: without this, a near-silent room (noiseFloor close to 0) would let
+        // the tiniest fluctuation multiply up to "voiced", since anything times a very small number
+        // is still very small.
+        private const val MIN_NOISE_FLOOR = 1e-7f
     }
 }
