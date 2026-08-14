@@ -61,6 +61,25 @@
     <string name="live_notification">Live dictation running</string>
     <string name="live_notification_channel_name">Live dictation</string>
 
+    <string name="llm_models">🧠 Text models</string>
+    <string name="llm_title">Text models</string>
+    <string name="llm_device_ram">This device: %1$d GB RAM</string>
+    <string name="llm_recommended_header">Recommended for your device</string>
+    <string name="llm_show_lightweight">Show smaller / faster models</string>
+    <string name="llm_show_advanced">Show more advanced models (may run slowly)</string>
+    <string name="llm_hide">Hide</string>
+    <string name="llm_none_resolved">Could not reach Hugging Face to check available models. Check your connection and reopen this screen.</string>
+    <string name="llm_inference_not_ready">Downloading works today; running these models on-device is not wired up yet.</string>
+    <string name="llm_size">%1$s · %2$s</string>
+    <string name="llm_downloaded">Downloaded</string>
+    <string name="llm_delete">Delete</string>
+    <string name="llm_downloading">Downloading… %1$d%%</string>
+    <string name="llm_download_failed">Download failed: %1$s</string>
+    <string name="llm_fit_lightweight">Fast on this device</string>
+    <string name="llm_fit_recommended">Comfortable fit</string>
+    <string name="llm_fit_advanced">May run slowly, uses most of this device\'s memory</string>
+    <string name="llm_fit_too_large">Very likely too large for this device</string>
+
     <string name="view_transcripts">View saved transcripts</string>
     <string name="transcripts_title">Saved transcripts</string>
     <string name="no_transcripts_found">No saved transcripts yet.</string>

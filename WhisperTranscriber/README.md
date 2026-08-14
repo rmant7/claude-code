@@ -155,11 +155,40 @@ re-transcribes the current utterance every ~2s.
 Re-transcribing the **whole current utterance** each refresh, rather than only the newest audio, is
 what lets whisper revise earlier words once it has heard the rest of the sentence, which is where
 most of live transcription's accuracy comes from. It stays affordable because the buffer is capped at
-25s (whisper's analysis window is 30s). An utterance is finalized when a crude energy-based
-voice-activity check sees ~0.8s of quiet, or when that cap is hit. `LiveTranscriptionState` keeps
-settled text and in-progress text apart for exactly this reason: the partial half is replaced
-wholesale on every refresh, so merging them would make the tail of the transcript visibly rewrite
-itself.
+25s (whisper's analysis window is 30s). An utterance is finalized when a voice-activity check
+(`MicrophoneRecorder.isVoiced`) sees ~0.8s of quiet, or when that cap is hit. That check compares
+each block's energy against a **live-measured noise floor** (an EMA of ambient energy, updated only
+from blocks before an utterance starts) rather than a fixed constant — a fixed threshold was tried
+first and shipped completely broken: real speech level depends heavily on mic gain and distance from
+the phone, so on real hardware it sat under the constant, every block was classified as silence, and
+recording produced no text at all with no error shown. `LiveTranscriptionState` keeps settled text
+and in-progress text apart for exactly this reason: the partial half is replaced wholesale on every
+refresh, so merging them would make the tail of the transcript visibly rewrite itself.
+
+### Text models (in progress)
+
+**🧠 Text models** on the main screen browses `LlmModelCatalog.SEEDS` (Qwen, Gemma, DeepSeek, GLM),
+grouped by how comfortably each is expected to run on *this* device — RAM detected via
+`DeviceCapabilities`, classified lightweight/recommended/advanced/too-large with generous headroom
+left for KV cache and everything else already running, not just whatever fits the raw weights.
+"Recommended for your device" shows by default; smaller/faster and heavier/advanced tiers sit behind
+expand toggles.
+
+Each seed names a model *family* (a Hugging Face repo id) but not a specific file: `HfFileResolver`
+resolves the actual `.gguf` file live, at browse time, by fetching the repo's file tree and picking
+the best available quantization (`Q4_K_M` preferred, with fallbacks, excluding multi-part split files
+since only single-file downloads are supported so far). This is deliberate, not a shortcut — the
+model landscape moves fast enough that a filename baked in at build time goes stale within months
+(confirmed directly while building this: the same model family moved through three numbered releases
+within weeks of each other), so resolving at runtime keeps the catalog pointing at whatever a repo
+actually contains *today*.
+
+**Downloading works; running these models does not yet** — there is no llama.cpp/GGUF inference
+engine wired into the app. That's stated on-screen rather than implied by a working download button.
+The seed list itself is also an interim measure: it's a small hand-picked set of established repos,
+not a live "N best models today" ranking, and a background check that surfaces a "newer model
+available" prompt when Hugging Face's current release for a family has moved past a seed is planned
+but not built yet.
 
 ### Browsing saved transcripts
 
@@ -215,9 +244,15 @@ Two test suites gate every CI build; the APK artifact is only uploaded if both p
   (`UrlRejectionTest`, including that a lookalike host like `youtube.com.evil.example` is *not*
   matched), and the chunk/thread-count math behind `whisper_full_parallel()`
   (`TranscriberParallelismTest`) — including that total threads never exceed the core budget across
-  a spread of durations and core counts. A few originally-private helpers were made `internal` (or
-  moved to top-level functions, dropping an Android-only dependency like `android.net.Uri` in
-  `UrlDownloader.guessExtension`) specifically so this pure logic is testable without a device.
+  a spread of durations and core counts; the live-dictation voice-activity decision
+  (`MicrophoneRecorderTest`), including a direct regression test for the shipped bug using energy
+  levels below the old broken fixed threshold; device RAM tiering (`DeviceCapabilitiesTest`); and the
+  Hugging Face GGUF-file-picking logic (`HfFileResolverTest`) — quant-priority ranking, excluding
+  multi-part split files, and the LFS-pointer-size fallback when parsing a tree response — all
+  against fixture data, with no live network call. A few originally-private helpers were made
+  `internal` (or moved to top-level functions, dropping an Android-only dependency like
+  `android.net.Uri` in `UrlDownloader.guessExtension`) specifically so this pure logic is testable
+  without a device.
 - **Instrumented tests** (`app/src/androidTest/`, run via `gradle connectedDebugAndroidTest` against
   an emulator in CI):
   - `MainActivitySmokeTest` launches the real `MainActivity` on a real Android runtime and asserts
@@ -231,6 +266,10 @@ Two test suites gate every CI build; the APK artifact is only uploaded if both p
     directory and asserts the empty-state message shows instead of crashing.
   - `ModelSelectionPersistenceTest` seeds the `MainActivity`-scoped `SharedPreferences` with a
     non-default model id before launch and asserts the spinner restores that selection.
+  - `LiveTranscriptionActivitySmokeTest` and `LlmModelsActivitySmokeTest` are launch-only checks for
+    the newer screens. The latter deliberately doesn't assert on which models resolve — catalog
+    resolution hits the real Hugging Face network, whose availability/latency in CI isn't something a
+    test should depend on — only that the screen survives whatever that resolution does.
   - `TranscriptionEndToEndTest` actually runs the transcription pipeline: downloads the Tiny model,
     decodes a short bundled test clip (`app/src/androidTest/assets/test_audio.wav`), and calls
     `Transcriber.transcribe()` through the real JNI bridge — the one path the smoke test above
