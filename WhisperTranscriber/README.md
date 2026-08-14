@@ -8,7 +8,9 @@ model size and download it on demand from Hugging Face the first time you need i
 
 1. **Pick a model size** — Tiny, Base, Small, Medium and Large v3 Turbo, each also offered as a **quantized**
    variant (q5_1/q5_0) that's roughly a third of the full-precision file size and noticeably faster to run on a
-   phone CPU, at a small accuracy cost — worth trying first if a full-precision model feels too slow. Tap
+   phone CPU, at a small accuracy cost — worth trying first if a full-precision model feels too slow. The choice is
+   remembered across launches (`Activity#getPreferences()`), so picking the same model every time (typically the
+   largest one downloaded) doesn't mean re-picking it on every app open. Tap
    **Download model**. The download runs in `ModelDownloadService`, a **foreground service**
    with a progress notification, not a plain Activity-scoped coroutine — large models can take many minutes on a
    mobile connection, and a background download without a foreground service gets starved by Doze/App Standby
@@ -75,11 +77,15 @@ model size and download it on demand from Hugging Face the first time you need i
      transcribed (a one-item lookahead), so decode time is fully hidden for every file but the first — decoding
      via `MediaCodec` is normally much faster than whisper.cpp inference, so this (rather than chunking a single
      file's audio) is where pipelining actually saves wall-clock time.
-4. Progress is visible at several levels: an overall "File *N* of *M*" bar for the batch, a live percentage on the
-   card of whichever file is actively being processed (decode progress from the container's reported duration,
-   transcription progress from whisper.cpp's own `progress_callback`) — and the transcript itself streams in live,
-   segment by segment, via whisper.cpp's `new_segment_callback`, instead of only appearing once the whole file is
-   done.
+4. Progress is visible at several levels: a "Loading model…" header while a (possibly large) model file is being
+   read off disk, an overall "File *N* of *M*" bar for the batch, a live percentage on the card of whichever file
+   is actively being processed (decode progress from the container's reported duration, transcription progress
+   from whisper.cpp's own `progress_callback`) — and the transcript itself streams in live, segment by segment, via
+   whisper.cpp's `new_segment_callback`, instead of only appearing once the whole file is done. Model loading and
+   decode progress are published to the UI's `StateFlow` as they happen (`TranscriptionService.publish()`/
+   `decodeSource()`'s `onUpdate` callback) — an earlier version mutated the shared progress fields during those two
+   phases without ever calling `publish()`, so the UI just sat on "Pending" with no visible activity until
+   transcription itself started, however long model load/decode actually took.
 5. Each result appears as its own card (filename, status, live/finished transcript) as soon as it's ready;
    **Copy all** / **Share all** combine every finished transcript into one block of text.
 
@@ -162,6 +168,8 @@ Two test suites gate every CI build; the APK artifact is only uploaded if both p
     device.
   - `TranscriptsActivitySmokeTest` launches `TranscriptsActivity` against an empty transcripts
     directory and asserts the empty-state message shows instead of crashing.
+  - `ModelSelectionPersistenceTest` seeds the `MainActivity`-scoped `SharedPreferences` with a
+    non-default model id before launch and asserts the spinner restores that selection.
   - `TranscriptionEndToEndTest` actually runs the transcription pipeline: downloads the Tiny model,
     decodes a short bundled test clip (`app/src/androidTest/assets/test_audio.wav`), and calls
     `Transcriber.transcribe()` through the real JNI bridge — the one path the smoke test above

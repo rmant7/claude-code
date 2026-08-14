@@ -100,16 +100,17 @@ class TranscriptionService : Service() {
         )
         outputDir.mkdirs()
 
-        publish(results, 0, total)
+        publish(results, 0, total, loadingModel = true)
         updateLoadingModelNotification()
         TranscriptionControl.reset()
 
         try {
             Transcriber(modelFile.absolutePath).use { transcriber ->
                 TranscriptionControl.activeTranscriber = transcriber
+                publish(results, 0, total)
                 // One-file lookahead: decode (fast, MediaCodec) overlaps with transcribing
                 // (slow, whisper.cpp inference) so decode time is hidden for every file but the first.
-                var pendingDecode: Deferred<Result<FloatArray>>? = decodeAsync(this, results, 0)
+                var pendingDecode: Deferred<Result<FloatArray>>? = decodeAsync(this, results, 0, total, 0)
 
                 for ((index, result) in results.withIndex()) {
                     if (TranscriptionControl.stopRequested.get()) {
@@ -121,7 +122,7 @@ class TranscriptionService : Service() {
                     updateNotification(index, total, result.source.displayName)
 
                     val decodeResult = pendingDecode?.await()
-                    pendingDecode = decodeAsync(this, results, index + 1)
+                    pendingDecode = decodeAsync(this, results, index + 1, total, index)
 
                     try {
                         val samples = checkNotNull(decodeResult).getOrThrow()
@@ -196,37 +197,52 @@ class TranscriptionService : Service() {
         }
     }
 
-    private fun publish(results: List<TranscriptionResult>, currentIndex: Int, total: Int) {
+    private fun publish(results: List<TranscriptionResult>, currentIndex: Int, total: Int, loadingModel: Boolean = false) {
         // A snapshot via .copy() matters here: TranscriptionResult's fields are mutated in place
         // on the same shared objects, so a plain toList() would just wrap references to objects
         // that keep changing underneath it — the "old" and "new" states StateFlow compares would
         // end up structurally identical (same, already-mutated objects on both sides), and it
         // would silently stop emitting live progress/text updates after the first one.
-        TranscriptionState.update(TranscriptionState.Status.Running(results.map { it.copy() }, currentIndex, total))
+        TranscriptionState.update(
+            TranscriptionState.Status.Running(results.map { it.copy() }, currentIndex, total, loadingModel)
+        )
     }
 
-    private fun decodeAsync(scope: CoroutineScope, results: List<TranscriptionResult>, index: Int): Deferred<Result<FloatArray>>? {
+    // displayIndex is the file actively shown as "File N of M" in the batch header — for the
+    // one-file lookahead, that's the file currently *transcribing*, not necessarily the file this
+    // decode call is working on, so a background decode of file N+1 never yanks the header forward
+    // while file N is still the one actually being processed.
+    private fun decodeAsync(
+        scope: CoroutineScope, results: List<TranscriptionResult>, index: Int, total: Int, displayIndex: Int
+    ): Deferred<Result<FloatArray>>? {
         if (index !in results.indices) return null
         val result = results[index]
-        return scope.async(Dispatchers.Default) { runCatching { decodeSource(result) } }
+        return scope.async(Dispatchers.Default) {
+            runCatching { decodeSource(result) { publish(results, displayIndex, total) } }
+        }
     }
 
-    private fun decodeSource(result: TranscriptionResult): FloatArray {
+    private fun decodeSource(result: TranscriptionResult, onUpdate: () -> Unit): FloatArray {
         return when (val source = result.source) {
             is MediaSource.LocalFile -> {
                 result.status = TranscriptionResult.Status.DECODING
+                onUpdate()
                 AudioDecoder.decodeToPcm16k(applicationContext, source.uri) { percent ->
                     result.progressPercent = percent
+                    onUpdate()
                 }
             }
 
             is MediaSource.RemoteUrl -> {
                 result.status = TranscriptionResult.Status.DOWNLOADING
+                onUpdate()
                 val file = UrlDownloader.download(applicationContext, source.url)
                 try {
                     result.status = TranscriptionResult.Status.DECODING
+                    onUpdate()
                     AudioDecoder.decodeFromPath(file.absolutePath) { percent ->
                         result.progressPercent = percent
+                        onUpdate()
                     }
                 } finally {
                     file.delete()

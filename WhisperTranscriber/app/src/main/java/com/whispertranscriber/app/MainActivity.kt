@@ -119,8 +119,20 @@ class MainActivity : AppCompatActivity() {
         )
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         binding.modelSpinner.adapter = adapter
+
+        // Re-picking the same (often large, slow-to-download) model on every single launch is
+        // needless friction, so the last choice is remembered across restarts.
+        val lastModelId = getPreferences(Context.MODE_PRIVATE).getString(PREF_LAST_MODEL_ID, null)
+        val lastPosition = WhisperModel.ALL.indexOfFirst { it.id == lastModelId }
+        if (lastPosition >= 0) {
+            binding.modelSpinner.setSelection(lastPosition)
+        }
+
         binding.modelSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                getPreferences(Context.MODE_PRIVATE).edit()
+                    .putString(PREF_LAST_MODEL_ID, WhisperModel.ALL[position].id)
+                    .apply()
                 refreshModelStatus()
             }
 
@@ -206,8 +218,11 @@ class MainActivity : AppCompatActivity() {
 
                             binding.resultsSection.visibility = View.VISIBLE
                             binding.batchProgressText.visibility = View.VISIBLE
-                            binding.batchProgressText.text =
+                            binding.batchProgressText.text = if (status.loadingModel) {
+                                getString(R.string.loading_model_notification)
+                            } else {
                                 getString(R.string.batch_progress, status.currentIndex + 1, status.total)
+                            }
                             binding.transcribeProgressBar.visibility = View.VISIBLE
                             binding.transcribeProgressBar.progress = (status.currentIndex * 100) / status.total
                             binding.stopButton.visibility = View.VISIBLE
@@ -339,5 +354,9 @@ class MainActivity : AppCompatActivity() {
             putExtra(Intent.EXTRA_TEXT, buildCombinedText())
         }
         startActivity(Intent.createChooser(intent, getString(R.string.share_all)))
+    }
+
+    private companion object {
+        const val PREF_LAST_MODEL_ID = "last_model_id"
     }
 }

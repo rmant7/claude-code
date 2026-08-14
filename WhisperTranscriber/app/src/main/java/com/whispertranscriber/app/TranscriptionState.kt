@@ -15,7 +15,14 @@ object TranscriptionState {
 
     sealed class Status {
         object Idle : Status()
-        data class Running(val results: List<TranscriptionResult>, val currentIndex: Int, val total: Int) : Status()
+        data class Running(
+            val results: List<TranscriptionResult>,
+            val currentIndex: Int,
+            val total: Int,
+            // Loading a large model file can itself take a long time with nothing else to show for
+            // it yet (no per-file status has started), which otherwise looks identical to a stall.
+            val loadingModel: Boolean = false
+        ) : Status()
         data class Finished(val results: List<TranscriptionResult>, val outputDir: String?) : Status()
     }
 
