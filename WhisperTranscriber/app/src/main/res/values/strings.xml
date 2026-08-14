@@ -49,6 +49,18 @@
     <string name="share_all">Share all</string>
     <string name="copied">Copied to clipboard.</string>
 
+    <string name="live_dictation">🎤 Live dictation</string>
+    <string name="live_title">Live dictation</string>
+    <string name="live_start">Start speaking</string>
+    <string name="live_stop">Stop</string>
+    <string name="live_clear">Clear</string>
+    <string name="live_idle">Tap to start. Speech is transcribed as you talk.</string>
+    <string name="live_listening">Listening…</string>
+    <string name="live_needs_mic">Microphone access is required for live dictation.</string>
+    <string name="live_needs_model">Download a Whisper model on the main screen first.</string>
+    <string name="live_notification">Live dictation running</string>
+    <string name="live_notification_channel_name">Live dictation</string>
+
     <string name="view_transcripts">View saved transcripts</string>
     <string name="transcripts_title">Saved transcripts</string>
     <string name="no_transcripts_found">No saved transcripts yet.</string>

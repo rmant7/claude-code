@@ -140,6 +140,27 @@ than *Done* or *Failed*; any files that hadn't started yet are marked **Stopped*
 There's no true pause/resume — whisper.cpp's inference call is synchronous with no mid-call suspension point to
 resume from, so once stopped a file has to be re-transcribed from the start if you want the rest of it.
 
+### Live dictation
+
+**🎤 Live dictation** on the main screen transcribes speech from the microphone as you talk, using
+whichever model and language are selected on the main screen. Audio arrives already as 16 kHz mono PCM
+(`MicrophoneRecorder`, `VOICE_RECOGNITION` source), so this path skips file decoding entirely.
+
+Recording runs in `LiveTranscriptionService` (a foreground service, type `microphone`) rather than in
+the Activity, so a dictation isn't cut off when the screen locks. Two coroutines split the work
+because they run at very different speeds: a reader drains the mic continuously — it must never
+block, or AudioRecord's ring buffer overwrites audio that was never read — while a worker
+re-transcribes the current utterance every ~2s.
+
+Re-transcribing the **whole current utterance** each refresh, rather than only the newest audio, is
+what lets whisper revise earlier words once it has heard the rest of the sentence, which is where
+most of live transcription's accuracy comes from. It stays affordable because the buffer is capped at
+25s (whisper's analysis window is 30s). An utterance is finalized when a crude energy-based
+voice-activity check sees ~0.8s of quiet, or when that cap is hit. `LiveTranscriptionState` keeps
+settled text and in-progress text apart for exactly this reason: the partial half is replaced
+wholesale on every refresh, so merging them would make the tail of the transcript visibly rewrite
+itself.
+
 ### Browsing saved transcripts
 
 **View saved transcripts** on the main screen opens a flat, most-recent-first list of every `.txt` file under

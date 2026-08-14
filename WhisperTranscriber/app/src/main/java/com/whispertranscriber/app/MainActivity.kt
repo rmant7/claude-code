@@ -98,6 +98,9 @@ class MainActivity : AppCompatActivity() {
         binding.stopButton.setOnClickListener { onStopClicked() }
         binding.copyAllButton.setOnClickListener { copyAllResults() }
         binding.shareAllButton.setOnClickListener { shareAllResults() }
+        binding.liveDictationButton.setOnClickListener {
+            startActivity(Intent(this, LiveTranscriptionActivity::class.java))
+        }
         binding.viewTranscriptsButton.setOnClickListener {
             startActivity(Intent(this, TranscriptsActivity::class.java))
         }
