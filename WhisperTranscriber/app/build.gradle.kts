@@ -98,6 +98,11 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
 
     testImplementation("junit:junit:4.13.2")
+    // Android's org.json (android.jar) is stubbed for plain JVM unit tests — calling it there throws
+    // "not mocked" — so HfFileResolverTest needs the real reference implementation on the unit test
+    // classpath. Harmless at runtime on-device: the app itself never depends on this artifact, only
+    // the test source set does, so production code keeps using the platform's real org.json as usual.
+    testImplementation("org.json:json:20240303")
 
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")

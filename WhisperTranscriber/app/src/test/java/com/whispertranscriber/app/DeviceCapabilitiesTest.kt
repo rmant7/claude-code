@@ -33,8 +33,10 @@ class DeviceCapabilitiesTest {
     @Test
     fun `the same model shifts tiers as device RAM changes`() {
         val modelSizeMb = 4800L // ~Qwen3 8B at Q4_K_M
+        // 4800 MB is 60% of 8000 MB RAM — past even the advanced ceiling (55%), so this is
+        // correctly TOO_LARGE rather than ADVANCED at that RAM size.
         assertEquals(ModelFit.TOO_LARGE, classify(modelSizeMb, deviceRamMb = 4_000))
-        assertEquals(ModelFit.ADVANCED, classify(modelSizeMb, deviceRamMb = 8_000))
+        assertEquals(ModelFit.TOO_LARGE, classify(modelSizeMb, deviceRamMb = 8_000))
         assertEquals(ModelFit.RECOMMENDED, classify(modelSizeMb, deviceRamMb = 16_000))
         assertEquals(ModelFit.LIGHTWEIGHT, classify(modelSizeMb, deviceRamMb = 32_000))
     }
