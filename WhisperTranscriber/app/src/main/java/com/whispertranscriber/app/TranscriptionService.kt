@@ -13,18 +13,19 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * Runs a whole transcription batch as a foreground service. A batch tied only to the Activity's
@@ -53,6 +54,7 @@ class TranscriptionService : Service() {
         }
 
         val model = WhisperModel.ALL.firstOrNull { it.id == intent?.getStringExtra(EXTRA_MODEL_ID) }
+        val language = intent?.getStringExtra(EXTRA_LANGUAGE) ?: WhisperLanguage.AUTO_CODE
         val remoteUrl = intent?.getStringExtra(EXTRA_REMOTE_URL)
         val uris = readUriListExtra(intent, EXTRA_URIS)
         val names = intent?.getStringArrayListExtra(EXTRA_NAMES).orEmpty()
@@ -73,7 +75,7 @@ class TranscriptionService : Service() {
 
         serviceScope.launch {
             try {
-                runBatch(model, sources)
+                runBatch(model, sources, language)
             } finally {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -90,7 +92,11 @@ class TranscriptionService : Service() {
         super.onDestroy()
     }
 
-    private suspend fun runBatch(model: WhisperModel, sources: List<MediaSource>) = coroutineScope {
+    private suspend fun runBatch(
+        model: WhisperModel,
+        sources: List<MediaSource>,
+        language: String
+    ) = coroutineScope {
         val modelFile = modelManager.modelFile(model)
         val results = sources.map { TranscriptionResult(it) }
         val total = results.size
@@ -108,9 +114,6 @@ class TranscriptionService : Service() {
             Transcriber(modelFile.absolutePath).use { transcriber ->
                 TranscriptionControl.activeTranscriber = transcriber
                 publish(results, 0, total)
-                // One-file lookahead: decode (fast, MediaCodec) overlaps with transcribing
-                // (slow, whisper.cpp inference) so decode time is hidden for every file but the first.
-                var pendingDecode: Deferred<Result<FloatArray>>? = decodeAsync(this, results, 0, total, 0)
 
                 for ((index, result) in results.withIndex()) {
                     if (TranscriptionControl.stopRequested.get()) {
@@ -121,36 +124,16 @@ class TranscriptionService : Service() {
 
                     updateNotification(index, total, result.source.displayName)
 
-                    val decodeResult = pendingDecode?.await()
-                    pendingDecode = decodeAsync(this, results, index + 1, total, index)
-
                     try {
-                        val samples = checkNotNull(decodeResult).getOrThrow()
-
-                        result.status = TranscriptionResult.Status.TRANSCRIBING
+                        result.status = TranscriptionResult.Status.DECODING
                         result.progressPercent = 0
                         result.text = ""
                         publish(results, index, total)
 
-                        // The return value is ignored: it's rebuilt from the final segment list,
-                        // which comes back empty when abort_callback interrupts the call, wiping
-                        // out the partial transcript. result.text already has the same content
-                        // (and survives an abort) because onSegment appends to it incrementally.
-                        transcriber.transcribe(
-                            samples,
-                            onProgress = { percent ->
-                                result.progressPercent = percent
-                                publish(results, index, total)
-                            },
-                            onSegment = { segmentText ->
-                                // whisper_full_parallel() can invoke this from more than one
-                                // native worker thread at once for the same result (each handling
-                                // a different chunk of the same file), so the append needs a lock
-                                // — plain += here would be a lost-update race.
-                                synchronized(result) { result.text += segmentText }
-                                publish(results, index, total)
-                            }
-                        )
+                        streamTranscribe(this, transcriber, result, language) {
+                            publish(results, index, total)
+                        }
+
                         result.text = result.text.trim()
                         result.status = if (TranscriptionControl.stopRequested.get()) {
                             TranscriptionResult.Status.CANCELLED
@@ -208,44 +191,116 @@ class TranscriptionService : Service() {
         )
     }
 
-    // displayIndex is the file actively shown as "File N of M" in the batch header — for the
-    // one-file lookahead, that's the file currently *transcribing*, not necessarily the file this
-    // decode call is working on, so a background decode of file N+1 never yanks the header forward
-    // while file N is still the one actually being processed.
-    private fun decodeAsync(
-        scope: CoroutineScope, results: List<TranscriptionResult>, index: Int, total: Int, displayIndex: Int
-    ): Deferred<Result<FloatArray>>? {
-        if (index !in results.indices) return null
-        val result = results[index]
-        return scope.async(Dispatchers.Default) {
-            runCatching { decodeSource(result) { publish(results, displayIndex, total) } }
+    /**
+     * Decodes and transcribes one source as a two-stage pipeline: a producer coroutine decodes the
+     * audio into ~30s PCM chunks while this coroutine transcribes the chunks already decoded. The
+     * queue between them is deliberately tiny — it exists to keep the decoder one step ahead of
+     * inference (which is far slower), not to buffer a whole file's audio in RAM, and its
+     * bounded size is what applies backpressure so a fast decoder can't run away and OOM the batch.
+     *
+     * Transcript text lands in [result] incrementally as each chunk finishes, so text starts
+     * appearing seconds in rather than only after the entire file has been decoded.
+     */
+    private suspend fun streamTranscribe(
+        scope: CoroutineScope,
+        transcriber: Transcriber,
+        result: TranscriptionResult,
+        language: String,
+        onUpdate: () -> Unit
+    ) {
+        val queue = ArrayBlockingQueue<Any>(CHUNK_QUEUE_CAPACITY)
+        val endOfStream = Any()
+
+        val producer = scope.launch(Dispatchers.IO) {
+            try {
+                decodeChunks(result) { chunk ->
+                    // offer-with-timeout rather than a blocking put: if the consumer stops early
+                    // (Stop pressed, or an error), a blocking put would strand this thread forever
+                    // holding the decoder open.
+                    while (!queue.offer(chunk, 200, TimeUnit.MILLISECONDS)) {
+                        if (TranscriptionControl.stopRequested.get()) throw CancellationException("stopped")
+                    }
+                    onUpdate()
+                }
+                queue.put(endOfStream)
+            } catch (e: CancellationException) {
+                queue.offer(endOfStream)
+            } catch (e: Throwable) {
+                queue.offer(e)
+            }
+        }
+
+        try {
+            while (true) {
+                val item = queue.poll(200, TimeUnit.MILLISECONDS)
+                    ?: if (TranscriptionControl.stopRequested.get()) break else continue
+
+                when {
+                    item === endOfStream -> break
+                    item is Throwable -> throw item
+                    item is FloatArray -> {
+                        result.status = TranscriptionResult.Status.TRANSCRIBING
+                        onUpdate()
+                        // The return value is ignored: it is rebuilt from the final segment list,
+                        // which comes back empty when abort_callback interrupts the call, wiping
+                        // out the partial transcript. result.text already holds the same content
+                        // (and survives an abort) because onSegment appends to it incrementally.
+                        transcriber.transcribe(
+                            item,
+                            language = language,
+                            onSegment = { segmentText ->
+                                // whisper_full_parallel() can invoke this from more than one native
+                                // worker thread at once for the same result, so the append needs a
+                                // lock — a plain += here would be a lost-update race.
+                                synchronized(result) { result.text += segmentText }
+                                onUpdate()
+                            }
+                        )
+                    }
+                }
+
+                if (TranscriptionControl.stopRequested.get()) break
+            }
+        } finally {
+            producer.cancel()
         }
     }
 
-    private fun decodeSource(result: TranscriptionResult, onUpdate: () -> Unit): FloatArray {
-        return when (val source = result.source) {
-            is MediaSource.LocalFile -> {
-                result.status = TranscriptionResult.Status.DECODING
-                onUpdate()
-                AudioDecoder.decodeToPcm16k(applicationContext, source.uri) { percent ->
-                    result.progressPercent = percent
-                    onUpdate()
-                }
-            }
+    /**
+     * Feeds decoded PCM chunks to [onChunk]. A remote URL is handed straight to MediaExtractor,
+     * which fetches it progressively — so transcription starts while the download is still running,
+     * instead of after it. Only if that fails outright (a server that won't serve range requests,
+     * say) does it fall back to downloading the whole file first.
+     */
+    private fun decodeChunks(result: TranscriptionResult, onChunk: (FloatArray) -> Unit) {
+        val onProgress: (Int) -> Unit = { percent -> result.progressPercent = percent }
+
+        when (val source = result.source) {
+            is MediaSource.LocalFile ->
+                AudioDecoder.streamFromUri(applicationContext, source.uri, onProgress = onProgress, onChunk = onChunk)
 
             is MediaSource.RemoteUrl -> {
-                result.status = TranscriptionResult.Status.DOWNLOADING
-                onUpdate()
-                val file = UrlDownloader.download(applicationContext, source.url)
+                // Checked before opening anything: a player-page link can't work as a media source
+                // no matter which path is taken, and failing here yields a message that says why.
+                UrlDownloader.rejectionReason(source.url)?.let { throw IOException(it) }
+
+                var produced = false
                 try {
-                    result.status = TranscriptionResult.Status.DECODING
-                    onUpdate()
-                    AudioDecoder.decodeFromPath(file.absolutePath) { percent ->
-                        result.progressPercent = percent
-                        onUpdate()
+                    AudioDecoder.streamFromPathOrUrl(source.url, onProgress = onProgress) {
+                        produced = true
+                        onChunk(it)
                     }
-                } finally {
-                    file.delete()
+                } catch (e: IOException) {
+                    // Retrying by downloading first is only safe while nothing has been emitted
+                    // yet; past that point the transcript would gain duplicated audio.
+                    if (produced) throw e
+                    result.status = TranscriptionResult.Status.DOWNLOADING
+                    val file = UrlDownloader.download(applicationContext, source.url)
+                    try {
+                        AudioDecoder.streamFromPathOrUrl(file.absolutePath, onProgress = onProgress, onChunk = onChunk)
+                    } finally {
+                        file.delete()
+                    }
                 }
             }
         }
@@ -317,23 +372,43 @@ class TranscriptionService : Service() {
 
     companion object {
         private const val EXTRA_MODEL_ID = "model_id"
+        private const val EXTRA_LANGUAGE = "language"
         private const val EXTRA_URIS = "uris"
         private const val EXTRA_NAMES = "names"
         private const val EXTRA_REMOTE_URL = "remote_url"
         private const val NOTIFICATION_ID = 1002
         private const val CHANNEL_ID = "transcription"
 
-        fun startForFiles(context: Context, model: WhisperModel, sources: List<MediaSource.LocalFile>) {
+        /**
+         * Two chunks in flight is enough to keep the decoder a step ahead of inference without
+         * letting decoded audio pile up in memory — inference is far slower than decoding, so a
+         * deeper queue would only ever be full.
+         */
+        private const val CHUNK_QUEUE_CAPACITY = 2
+
+        fun startForFiles(
+            context: Context,
+            model: WhisperModel,
+            sources: List<MediaSource.LocalFile>,
+            language: String = WhisperLanguage.AUTO_CODE
+        ) {
             val intent = Intent(context, TranscriptionService::class.java)
                 .putExtra(EXTRA_MODEL_ID, model.id)
+                .putExtra(EXTRA_LANGUAGE, language)
                 .putParcelableArrayListExtra(EXTRA_URIS, ArrayList(sources.map { it.uri }))
                 .putStringArrayListExtra(EXTRA_NAMES, ArrayList(sources.map { it.displayName }))
             ContextCompat.startForegroundService(context, intent)
         }
 
-        fun startForUrl(context: Context, model: WhisperModel, url: String) {
+        fun startForUrl(
+            context: Context,
+            model: WhisperModel,
+            url: String,
+            language: String = WhisperLanguage.AUTO_CODE
+        ) {
             val intent = Intent(context, TranscriptionService::class.java)
                 .putExtra(EXTRA_MODEL_ID, model.id)
+                .putExtra(EXTRA_LANGUAGE, language)
                 .putExtra(EXTRA_REMOTE_URL, url)
             ContextCompat.startForegroundService(context, intent)
         }

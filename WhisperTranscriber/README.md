@@ -10,7 +10,10 @@ model size and download it on demand from Hugging Face the first time you need i
    variant (q5_1/q5_0) that's roughly a third of the full-precision file size and noticeably faster to run on a
    phone CPU, at a small accuracy cost — worth trying first if a full-precision model feels too slow. The choice is
    remembered across launches (`Activity#getPreferences()`), so picking the same model every time (typically the
-   largest one downloaded) doesn't mean re-picking it on every app open. Tap
+   largest one downloaded) doesn't mean re-picking it on every app open. There is also a **spoken language**
+   selector (likewise remembered). Naming the language is worth doing: whisper's auto-detect decides from only
+   the first 30 seconds, so a recording that opens with noise, music or a stray phrase in another language can
+   be mis-detected, and every later window then inherits that wrong guess. Tap
    **Download model**. The download runs in `ModelDownloadService`, a **foreground service**
    with a progress notification, not a plain Activity-scoped coroutine — large models can take many minutes on a
    mobile connection, and a background download without a foreground service gets starved by Doze/App Standby
@@ -22,7 +25,14 @@ model size and download it on demand from Hugging Face the first time you need i
    fails to load, the app deletes the bad file automatically so you can just tap **Download model** again.
 2. **Choose an input source**:
    - **File** — pick a single audio/video file with the system file picker.
-   - **URL** — paste a direct link to a remote audio/video file; the app downloads it to a temp file first.
+   - **URL** — paste a direct link to a remote audio/video file. The URL is handed straight to `MediaExtractor`,
+     which fetches it progressively, so transcription starts while the download is still in flight rather than
+     after it finishes; only if that fails outright does the app fall back to downloading the whole file first.
+     The link has to point *at the media itself*. A **YouTube/Vimeo/TikTok/etc. page link will not work** and is
+     rejected up front with an explanation instead of a decoder error: turning one into a media stream means
+     extracting it the way yt-dlp does — parsing the page's player JavaScript and solving its signature cipher,
+     which those sites change frequently and their terms of service prohibit — so that is deliberately not
+     implemented here.
    - **Folder** — pick a directory (via Storage Access Framework); the app recursively scans it for every
      recognized audio/video file and queues them all.
 3. Tap **Transcribe**. The whole batch runs in `TranscriptionService`, a **foreground service** with a progress
@@ -96,10 +106,15 @@ model size and download it on demand from Hugging Face the first time you need i
      batch — this is also why files aren't transcribed several-at-once: each loaded whisper.cpp context holds the
      model weights in RAM (e.g. ~1.5 GB for Medium), so N files running fully in parallel would mean N full model
      loads, which would OOM on a typical phone for anything above Tiny/Base.
-   - In a multi-file batch, the next file's audio is decoded in the background while the current file is being
-     transcribed (a one-item lookahead), so decode time is fully hidden for every file but the first — decoding
-     via `MediaCodec` is normally much faster than whisper.cpp inference, so this (rather than chunking a single
-     file's audio) is where pipelining actually saves wall-clock time.
+   - Decoding and transcription run as a **streaming pipeline within each file**, not as two sequential phases:
+     `AudioDecoder` emits 16 kHz mono PCM in ~30s chunks (matching whisper's own analysis window) as the decoder
+     produces them, a producer coroutine pushes those into a deliberately tiny bounded queue, and inference
+     consumes them — so chunk N+1 is being decoded while chunk N is being transcribed, transcript text starts
+     appearing seconds in rather than only after the whole file is decoded, and peak memory is bounded by the
+     chunk size instead of scaling with file length. The queue's small size is what applies backpressure, since
+     decoding is far faster than inference and would otherwise run away and exhaust memory on a long recording.
+     This replaced an earlier cross-file lookahead, which only hid decode time for files after the first and did
+     nothing for the latency of the file you were actually waiting on.
 4. Progress is visible at several levels: a "Loading model…" header while a (possibly large) model file is being
    read off disk, an overall "File *N* of *M*" bar for the batch, a live percentage on the card of whichever file
    is actively being processed (decode progress from the container's reported duration, transcription progress
@@ -175,7 +190,9 @@ Two test suites gate every CI build; the APK artifact is only uploaded if both p
   model catalog's integrity — unique ids/filenames, well-formed URLs (`WhisperModelTest`), the PCM
   downmix/resample math (`AudioDecoderTest`), HTTP `Content-Range` header parsing
   (`ContentRangeTest`), the URL-to-file-extension guessing used for URL-mode downloads
-  (`UrlDownloaderTest`), and the chunk/thread-count math behind `whisper_full_parallel()`
+  (`UrlDownloaderTest`), rejection of player-page links that can't be used as media sources
+  (`UrlRejectionTest`, including that a lookalike host like `youtube.com.evil.example` is *not*
+  matched), and the chunk/thread-count math behind `whisper_full_parallel()`
   (`TranscriberParallelismTest`) — including that total threads never exceed the core budget across
   a spread of durations and core counts. A few originally-private helpers were made `internal` (or
   moved to top-level functions, dropping an Android-only dependency like `android.net.Uri` in

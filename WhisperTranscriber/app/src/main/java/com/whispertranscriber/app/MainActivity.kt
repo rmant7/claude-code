@@ -46,6 +46,9 @@ class MainActivity : AppCompatActivity() {
     private val selectedModel: WhisperModel
         get() = WhisperModel.ALL[binding.modelSpinner.selectedItemPosition]
 
+    private val selectedLanguage: WhisperLanguage
+        get() = WhisperLanguage.ALL[binding.languageSpinner.selectedItemPosition]
+
     private val pickFileLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -78,6 +81,7 @@ class MainActivity : AppCompatActivity() {
         modelManager = ModelManager(applicationContext)
 
         setUpModelSpinner()
+        setUpLanguageSpinner()
         setUpSourceModeSwitcher()
         setUpResultsList()
         observeDownloadState()
@@ -134,6 +138,32 @@ class MainActivity : AppCompatActivity() {
                     .putString(PREF_LAST_MODEL_ID, WhisperModel.ALL[position].id)
                     .apply()
                 refreshModelStatus()
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+    }
+
+    private fun setUpLanguageSpinner() {
+        val adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            WhisperLanguage.ALL.map { it.displayName }
+        )
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        binding.languageSpinner.adapter = adapter
+
+        val lastCode = getPreferences(Context.MODE_PRIVATE).getString(PREF_LAST_LANGUAGE_CODE, null)
+        val lastPosition = WhisperLanguage.ALL.indexOfFirst { it.code == lastCode }
+        if (lastPosition >= 0) {
+            binding.languageSpinner.setSelection(lastPosition)
+        }
+
+        binding.languageSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                getPreferences(Context.MODE_PRIVATE).edit()
+                    .putString(PREF_LAST_LANGUAGE_CODE, WhisperLanguage.ALL[position].code)
+                    .apply()
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) {}
@@ -300,20 +330,21 @@ class MainActivity : AppCompatActivity() {
 
     private fun onTranscribeClicked() {
         val model = selectedModel
+        val language = selectedLanguage.code
         requestNotificationPermissionIfNeeded()
 
         when (currentMode) {
             Mode.FILE -> {
                 val uri = selectedFileUri ?: return
                 TranscriptionService.startForFiles(
-                    applicationContext, model, listOf(MediaSource.LocalFile(uri, selectedFileName))
+                    applicationContext, model, listOf(MediaSource.LocalFile(uri, selectedFileName)), language
                 )
             }
 
             Mode.URL -> {
                 val url = binding.urlInput.text?.toString()?.trim().orEmpty()
                 if (url.isBlank()) return
-                TranscriptionService.startForUrl(applicationContext, model, url)
+                TranscriptionService.startForUrl(applicationContext, model, url, language)
             }
 
             Mode.FOLDER -> {
@@ -321,7 +352,7 @@ class MainActivity : AppCompatActivity() {
                 val sources = selectedFolderFiles.map { doc ->
                     MediaSource.LocalFile(doc.uri, doc.name ?: doc.uri.lastPathSegment ?: "file")
                 }
-                TranscriptionService.startForFiles(applicationContext, model, sources)
+                TranscriptionService.startForFiles(applicationContext, model, sources, language)
             }
         }
 
@@ -358,5 +389,6 @@ class MainActivity : AppCompatActivity() {
 
     private companion object {
         const val PREF_LAST_MODEL_ID = "last_model_id"
+        const val PREF_LAST_LANGUAGE_CODE = "last_language_code"
     }
 }

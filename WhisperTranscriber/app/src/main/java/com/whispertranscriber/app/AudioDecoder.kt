@@ -5,47 +5,100 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
-import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.ByteOrder
 
 /**
- * Decodes an audio or video file into mono 16 kHz float PCM samples, the input format
- * expected by whisper.cpp. Android's MediaExtractor/MediaCodec natively demux most common
- * audio and video containers (mp3, wav, m4a/aac, flac, ogg/opus, amr, mp4, 3gp, webm/mkv, …);
- * for video files only the audio track is selected and decoded, video frames are ignored.
+ * Decodes an audio or video source into mono 16 kHz float PCM, the input format whisper.cpp
+ * expects. Android's MediaExtractor/MediaCodec natively demux most common audio and video
+ * containers (mp3, wav, m4a/aac, flac, ogg/opus, amr, mp4, 3gp, webm/mkv, …); for video only the
+ * audio track is selected and decoded, video frames are ignored.
+ *
+ * Decoding is **streaming**: PCM is handed back in chunks as it is produced, rather than
+ * accumulated into one array at the end. That matters for three reasons — transcription of chunk N
+ * can start while chunk N+1 is still being decoded (so the first text appears in seconds instead of
+ * after the whole file is decoded), peak memory stays bounded by the chunk size instead of scaling
+ * with file length, and an http(s) source can be fed straight to MediaExtractor, which downloads it
+ * progressively, so there is no separate "download the whole file first" phase at all.
  */
 object AudioDecoder {
 
-    private const val TARGET_SAMPLE_RATE = 16000
+    const val TARGET_SAMPLE_RATE = 16000
+
+    /**
+     * Whisper's own analysis window is 30s and it pads shorter input up to that length, so chunking
+     * on the same boundary is what keeps chunked decoding from wasting inference work.
+     */
+    const val DEFAULT_CHUNK_SECONDS = 30
+
     private const val TIMEOUT_US = 10_000L
 
+    /** Streams [uri] (a content:// or file:// URI) as 16 kHz mono float PCM chunks. */
+    fun streamFromUri(
+        context: Context,
+        uri: Uri,
+        chunkSeconds: Int = DEFAULT_CHUNK_SECONDS,
+        onProgress: ((Int) -> Unit)? = null,
+        onChunk: (FloatArray) -> Unit
+    ) = decodeStreaming({ it.setDataSource(context, uri, null) }, chunkSeconds, onProgress, onChunk)
+
+    /**
+     * Streams [source] — a local file path *or* an http(s) URL — as 16 kHz mono float PCM chunks.
+     * For a URL, MediaExtractor fetches progressively, so decoding starts almost immediately
+     * instead of after a full download.
+     */
+    fun streamFromPathOrUrl(
+        source: String,
+        chunkSeconds: Int = DEFAULT_CHUNK_SECONDS,
+        onProgress: ((Int) -> Unit)? = null,
+        onChunk: (FloatArray) -> Unit
+    ) = decodeStreaming({ it.setDataSource(source) }, chunkSeconds, onProgress, onChunk)
+
+    /** Decodes a local file fully into one array. Retained for tests and one-shot callers. */
+    fun decodeFromPath(path: String, onProgress: ((Int) -> Unit)? = null): FloatArray {
+        val chunks = mutableListOf<FloatArray>()
+        streamFromPathOrUrl(path, onProgress = onProgress) { chunks.add(it) }
+        return concat(chunks)
+    }
+
+    /** Decodes a URI fully into one array. Retained for tests and one-shot callers. */
     fun decodeToPcm16k(context: Context, uri: Uri, onProgress: ((Int) -> Unit)? = null): FloatArray {
-        val tempFile = copyUriToTempFile(context, uri)
-        return try {
-            decodeFile(tempFile.absolutePath, onProgress)
-        } finally {
-            tempFile.delete()
-        }
+        val chunks = mutableListOf<FloatArray>()
+        streamFromUri(context, uri, onProgress = onProgress) { chunks.add(it) }
+        return concat(chunks)
     }
 
-    /** Same as [decodeToPcm16k] but for a file already sitting on local disk (e.g. a downloaded URL). */
-    fun decodeFromPath(path: String, onProgress: ((Int) -> Unit)? = null): FloatArray = decodeFile(path, onProgress)
-
-    private fun copyUriToTempFile(context: Context, uri: Uri): File {
-        val input = context.contentResolver.openInputStream(uri)
-            ?: throw IOException("Cannot open selected file")
-        val temp = File.createTempFile("audio", ".amr", context.cacheDir)
-        input.use { inStream ->
-            FileOutputStream(temp).use { out -> inStream.copyTo(out) }
+    private fun concat(chunks: List<FloatArray>): FloatArray {
+        val out = FloatArray(chunks.sumOf { it.size })
+        var offset = 0
+        for (c in chunks) {
+            c.copyInto(out, offset)
+            offset += c.size
         }
-        return temp
+        return out
     }
 
-    private fun decodeFile(path: String, onProgress: ((Int) -> Unit)? = null): FloatArray {
+    private fun decodeStreaming(
+        setSource: (MediaExtractor) -> Unit,
+        chunkSeconds: Int,
+        onProgress: ((Int) -> Unit)?,
+        onChunk: (FloatArray) -> Unit
+    ) {
         val extractor = MediaExtractor()
-        extractor.setDataSource(path)
+        try {
+            setSource(extractor)
+        } catch (e: Exception) {
+            extractor.release()
+            // MediaExtractor's own message here is the near-useless "Failed to instantiate
+            // extractor", which says nothing about *why*. By far the most common cause in practice
+            // is being handed something that isn't a media stream at all — a web page URL rather
+            // than a direct media link — so name that explicitly.
+            throw IOException(
+                "Could not read this as an audio/video stream. If this is a link, it must point " +
+                    "directly at a media file, not at a web page that plays one.",
+                e
+            )
+        }
 
         var trackIndex = -1
         var format: MediaFormat? = null
@@ -58,35 +111,52 @@ object AudioDecoder {
                 break
             }
         }
-        require(trackIndex >= 0 && format != null) { "No audio track found in the selected file" }
+        if (trackIndex < 0 || format == null) {
+            extractor.release()
+            throw IOException("No audio track found in this file")
+        }
         extractor.selectTrack(trackIndex)
 
         val mime = format.getString(MediaFormat.KEY_MIME)!!
-        val sourceSampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
-            format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-        } else {
-            TARGET_SAMPLE_RATE
-        }
-        val sourceChannels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
-            format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-        } else {
-            1
-        }
+        val sourceSampleRate = format.optInt(MediaFormat.KEY_SAMPLE_RATE, TARGET_SAMPLE_RATE)
+        val sourceChannels = format.optInt(MediaFormat.KEY_CHANNEL_COUNT, 1).coerceAtLeast(1)
         val durationUs = if (format.containsKey(MediaFormat.KEY_DURATION)) {
             format.getLong(MediaFormat.KEY_DURATION)
         } else {
             -1L
         }
 
+        // Chunk size is measured in interleaved source-rate samples, and must stay a whole number
+        // of frames so downmixing never splits a frame across two chunks.
+        val chunkFrames = chunkSeconds.coerceAtLeast(1) * sourceSampleRate
+        val chunkSamples = chunkFrames * sourceChannels
+
         val codec = MediaCodec.createDecoderByType(mime)
         codec.configure(format, null, null, 0)
         codec.start()
 
-        val pcmChunks = mutableListOf<ShortArray>()
+        val pending = PcmBuffer()
         val bufferInfo = MediaCodec.BufferInfo()
         var sawInputEos = false
         var sawOutputEos = false
         var lastReportedPercent = -1
+        var emittedAnything = false
+
+        fun emit(sampleCount: Int) {
+            if (sampleCount <= 0) return
+            val raw = pending.take(sampleCount)
+            val mono = if (sourceChannels > 1) downmixToMono(raw, sourceChannels) else raw
+            val floats = FloatArray(mono.size) { mono[it] / 32768.0f }
+            val resampled = if (sourceSampleRate != TARGET_SAMPLE_RATE) {
+                resample(floats, sourceSampleRate, TARGET_SAMPLE_RATE)
+            } else {
+                floats
+            }
+            if (resampled.isNotEmpty()) {
+                emittedAnything = true
+                onChunk(resampled)
+            }
+        }
 
         try {
             while (!sawOutputEos) {
@@ -112,9 +182,7 @@ object AudioDecoder {
                         outputBuffer.position(bufferInfo.offset)
                         outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
                         val shortBuffer = outputBuffer.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-                        val chunk = ShortArray(shortBuffer.remaining())
-                        shortBuffer.get(chunk)
-                        pcmChunks.add(chunk)
+                        pending.append(shortBuffer)
                     }
                     if (durationUs > 0 && onProgress != null) {
                         val percent = ((bufferInfo.presentationTimeUs * 100) / durationUs).toInt().coerceIn(0, 100)
@@ -128,30 +196,76 @@ object AudioDecoder {
                         sawOutputEos = true
                     }
                 }
+
+                while (pending.size >= chunkSamples) {
+                    emit(chunkSamples)
+                }
             }
+            // Whatever is left over after the last full chunk is still real audio, so it gets its
+            // own (short) final chunk rather than being dropped.
+            emit(pending.size)
         } finally {
-            codec.stop()
+            runCatching { codec.stop() }
             codec.release()
             extractor.release()
         }
 
-        require(pcmChunks.isNotEmpty()) { "The file contained no decodable audio" }
+        if (!emittedAnything) {
+            throw IOException("This file contained no decodable audio")
+        }
+    }
 
-        val totalSamples = pcmChunks.sumOf { it.size }
-        val pcm = ShortArray(totalSamples)
-        var offset = 0
-        for (chunk in pcmChunks) {
-            chunk.copyInto(pcm, offset)
-            offset += chunk.size
+    private fun MediaFormat.optInt(key: String, fallback: Int): Int =
+        if (containsKey(key)) getInteger(key) else fallback
+
+    /**
+     * Growable short buffer with cheap head removal, so completed chunks can be handed off without
+     * copying the not-yet-full remainder around on every append.
+     */
+    private class PcmBuffer {
+        private var data = ShortArray(INITIAL_CAPACITY)
+        private var start = 0
+        private var end = 0
+
+        val size: Int get() = end - start
+
+        fun append(source: java.nio.ShortBuffer) {
+            val count = source.remaining()
+            ensureRoom(count)
+            source.get(data, end, count)
+            end += count
         }
 
-        val mono = if (sourceChannels > 1) downmixToMono(pcm, sourceChannels) else pcm
-        val floatSamples = FloatArray(mono.size) { mono[it] / 32768.0f }
+        fun take(count: Int): ShortArray {
+            val n = count.coerceAtMost(size)
+            val out = ShortArray(n)
+            data.copyInto(out, 0, start, start + n)
+            start += n
+            if (start == end) {
+                start = 0
+                end = 0
+            }
+            return out
+        }
 
-        return if (sourceSampleRate != TARGET_SAMPLE_RATE) {
-            resample(floatSamples, sourceSampleRate, TARGET_SAMPLE_RATE)
-        } else {
-            floatSamples
+        private fun ensureRoom(count: Int) {
+            if (end + count <= data.size) return
+            // Reclaim the already-consumed head first; only grow if that isn't enough.
+            if (size + count <= data.size) {
+                data.copyInto(data, 0, start, end)
+            } else {
+                var capacity = data.size
+                while (capacity < size + count) capacity *= 2
+                val grown = ShortArray(capacity)
+                data.copyInto(grown, 0, start, end)
+                data = grown
+            }
+            end = size
+            start = 0
+        }
+
+        private companion object {
+            const val INITIAL_CAPACITY = 1 shl 16
         }
     }
 

@@ -10,6 +10,8 @@
     <string name="downloading_model_notification">Downloading %1$s</string>
     <string name="download_notification_channel_name">Model downloads</string>
 
+    <string name="language_label">Spoken language (naming it beats auto-detect)</string>
+
     <string name="source_label">2. Choose input</string>
     <string name="mode_file">File</string>
     <string name="mode_url">URL</string>
