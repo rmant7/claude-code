@@ -40,10 +40,9 @@ model size and download it on demand from Hugging Face the first time you need i
    - Downmixes to mono and resamples to 16 kHz, the format whisper.cpp expects.
    - Runs inference on-device through a small JNI bridge (`app/src/main/cpp/whisper_jni.cpp`) around whisper.cpp's C
      API. Total CPU budget for one `transcribe()` call is capped at 4 cores (`Transcriber.kt`) rather than the
-     device's full core count — pinning every core at 100% for the many sustained minutes a long file needs is
-     exactly the load pattern that triggers mobile thermal throttling, and a user saw a several-minute call
-     recording still under 50% transcribed after multiple hours, orders of magnitude slower than expected and
-     consistent with the phone clocking itself down progressively the longer it ran flat-out. That budget is split
+     device's full core count, because phone SoCs are big.LITTLE: ggml splits each matmul evenly across its
+     threads, so handing work to the 2-3x slower efficiency cores mostly makes the other threads wait on them.
+     Four is a reasonable proxy for "the performance cluster" on typical hardware. That budget is split
      between real chunk-level parallelism (`whisper_full_parallel()`, splitting one file's audio across native
      threads) and per-chunk thread count, but *only* when the file is long enough that every chunk still gets a
      useful amount of audio (currently ≥30s/chunk, see `computeParallelism()` in `Transcriber.kt`) — very short
@@ -57,7 +56,27 @@ model size and download it on demand from Hugging Face the first time you need i
      (see Testing below) exists to catch a hang like that before it ships again, and `TranscriberParallelismTest`
      covers the chunk-count math on the JVM.
 
-     A likely bigger factor, found by reading ggml's own CMake logic: with `GGML_NATIVE OFF` and no ARM arch set
+     **The dominant factor, and the most likely explanation for "hours instead of minutes":** an Android *debug*
+     APK compiles its native code with `CMAKE_BUILD_TYPE=Debug`, which for Clang means no optimization at all
+     (`-O0`) — no inlining, no auto-vectorization, every intermediate spilled to memory. For ordinary app code
+     that's invisible; for ggml, which is almost nothing but tight numeric kernels, it is a 10x-and-up penalty,
+     and it silently defeats the ARM SIMD flags below too (unoptimized code never vectorizes those kernels in the
+     first place). Since this project ships a debug-signed APK as its only build, `cpp/CMakeLists.txt` forces
+     `-O3 -DNDEBUG` for every configuration, so the packaged `.so` is optimized while the APK stays
+     debuggable/installable. The CMake `message()` there prints the effective setting into the CI build log, so
+     this stays verifiable rather than assumed.
+
+     Two whisper.cpp-level settings matter almost as much (`whisper_jni.cpp`): `flash_attn` is enabled on the
+     context (a fused attention kernel that avoids materializing the full attention matrix — an exact
+     optimization, so no quality tradeoff), and `temperature_inc` is set to `0`. That second one disables
+     whisper's *temperature fallback*: by default a 30s window that fails its entropy/logprob quality heuristics
+     is re-decoded at temperature 0.2, 0.4, … 1.0, i.e. up to six full decodes of the same audio. Noisy
+     real-world recordings — phone calls especially — trip those thresholds constantly, making this a large and
+     completely invisible multiplier on transcription time. Unlike the others this *is* a real quality tradeoff
+     on hard audio (a failing window is accepted as-is instead of retried), but a bounded one, and it's what
+     whisper.cpp's own throughput-oriented examples do.
+
+     A further factor, found by reading ggml's own CMake logic: with `GGML_NATIVE OFF` and no ARM arch set
      explicitly, ggml appends **no** `-march` flags at all for the arm64-v8a build — it silently falls back to the
      compiler's baseline `armv8-a`, without `dotprod`/`fp16`, which whisper.cpp's quantized matmul kernels (the
      dominant cost of inference) lean on heavily. `app/src/main/cpp/CMakeLists.txt` now sets
@@ -66,9 +85,10 @@ model size and download it on demand from Hugging Face the first time you need i
      **Caveat:** a device older than ~2017 (ARMv8.0, no dotprod) would crash with `SIGILL` running this build; the
      upstream-intended fix for that (build several CPU variants and pick the right one at runtime via
      `GGML_CPU_ALL_VARIANTS` + `GGML_BACKEND_DL`) needs restructuring to shared native libs and a runtime
-     backend-loading call, not attempted here. This is also the one piece of this whole performance story that CI
-     structurally *can't* verify — the emulator is x86_64, so this flag never executes there; real transcription
-     speed on real ARM hardware can only be confirmed by testing on-device.
+     backend-loading call, not attempted here. The ARM flag specifically is the one piece of this performance
+     story that CI structurally *can't* verify — the emulator is x86_64, so it never executes there. (The `-O3`
+     fix above does apply to the emulator build, so CI does exercise it.) Real end-to-end transcription speed on
+     real ARM hardware can only be confirmed by testing on-device.
      The model is loaded **once** and reused across every file in a
      batch — this is also why files aren't transcribed several-at-once: each loaded whisper.cpp context holds the
      model weights in RAM (e.g. ~1.5 GB for Medium), so N files running fully in parallel would mean N full model

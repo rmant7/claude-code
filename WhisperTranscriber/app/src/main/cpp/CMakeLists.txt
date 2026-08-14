@@ -5,6 +5,28 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# An Android *debug* APK compiles its native code with CMAKE_BUILD_TYPE=Debug, and for Clang that
+# means no optimization at all: no inlining, no auto-vectorization, every intermediate value spilled
+# to memory instead of kept in registers. For ordinary app code that is invisible. For ggml, which
+# is almost nothing but tight numeric kernels, -O0 versus -O3 is a 10x-and-up difference — i.e.
+# exactly the difference between "a few minutes" and "several hours" for one recording, which is the
+# symptom that was actually reported. It also silently defeats the GGML_CPU_ARM_ARCH dotprod/fp16
+# flags set below, since unoptimized code never vectorizes those kernels in the first place.
+#
+# This project ships a debug-signed APK as its only build (see README), so the optimization level is
+# forced back up for every configuration here: the packaged .so is optimized even though the APK
+# itself stays debuggable/installable. -DNDEBUG additionally drops ggml's internal assert()s from
+# the hot paths. The message() below prints the effective setting into the CI build log so this
+# stays verifiable rather than assumed.
+foreach(cfg DEBUG RELWITHDEBINFO MINSIZEREL RELEASE)
+    set(CMAKE_C_FLAGS_${cfg}   "-O3 -DNDEBUG" CACHE STRING "" FORCE)
+    set(CMAKE_CXX_FLAGS_${cfg} "-O3 -DNDEBUG" CACHE STRING "" FORCE)
+endforeach()
+# Belt and braces: target compile options land after the per-config flags on the command line, so
+# this wins even if the toolchain file re-injects an -O0 of its own after the cache is populated.
+add_compile_options(-O3)
+message(STATUS "whisper_jni: CMAKE_BUILD_TYPE='${CMAKE_BUILD_TYPE}' -> forcing optimized native build (-O3)")
+
 include(FetchContent)
 FetchContent_Declare(
     whispercpp

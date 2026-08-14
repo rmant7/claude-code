@@ -32,12 +32,18 @@ class Transcriber(modelPath: String) : Closeable {
     ): String {
         check(contextPtr != 0L) { "Transcriber already closed" }
 
-        // Pinning every core at 100% for the many minutes a longer file needs is exactly the kind
-        // of sustained load that triggers mobile thermal throttling — a user saw a 0.5 MB call
-        // recording (several minutes of audio) still under 50% after hours, consistent with the
-        // phone clocking itself down progressively the longer it runs flat-out. This is the total
-        // CPU budget for this one transcribe() call, shared between however many processors below
-        // end up splitting the audio.
+        // Total CPU budget for this one transcribe() call, shared between however many processors
+        // below end up splitting the audio. Capped rather than using every core because phone SoCs
+        // are big.LITTLE: ggml splits each matmul evenly across its threads, so handing work to the
+        // 2-3x slower efficiency cores just makes every other thread wait on them. Four is a good
+        // proxy for "the performance cluster" on typical hardware, and it also keeps sustained load
+        // (and therefore thermal throttling) lower on long batches.
+        //
+        // Historical note: this cap was originally introduced *as* the fix for a report of a
+        // recording taking hours, on a thermal-throttling theory. That theory now looks wrong — the
+        // native code was being compiled -O0 (see the comment in cpp/CMakeLists.txt), which is a
+        // far better explanation for a slowdown of that magnitude. The cap is kept for the
+        // big.LITTLE reason above, not the original one.
         val coreBudget = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
 
         // whisper_full_parallel() (splitting one file's audio into N chunks, each transcribed on

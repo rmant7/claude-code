@@ -28,6 +28,10 @@ Java_com_whispertranscriber_app_WhisperLib_initContext(JNIEnv *env, jclass /*cla
 
     struct whisper_context_params cparams = whisper_context_default_params();
     cparams.use_gpu = false;
+    // Flash attention computes the same result with a fused kernel that avoids materializing the
+    // full attention matrix — less memory traffic, which is the binding constraint on a phone CPU.
+    // It is an exact optimization, not an approximation, so there's no output-quality tradeoff.
+    cparams.flash_attn = true;
 
     struct whisper_context *ctx = whisper_init_from_file_with_params(path, cparams);
 
@@ -159,6 +163,15 @@ Java_com_whispertranscriber_app_WhisperLib_transcribe(JNIEnv *env, jclass /*claz
     params.language = lang;
     params.n_threads = numThreads > 0 ? numThreads : 4;
     params.no_context = true;
+    // Temperature fallback: by default, whenever a 30s window fails whisper's quality heuristics
+    // (entropy/logprob thresholds) it is decoded again at temperature 0.2, 0.4, ... 1.0 — up to six
+    // full decodes of the same audio. Noisy real-world recordings (phone calls especially) trip
+    // those thresholds constantly, so this is a large and completely invisible multiplier on
+    // transcription time. Setting the increment to 0 disables the retries: a window that fails is
+    // accepted as-is rather than re-decoded. This is a real quality tradeoff on hard audio, unlike
+    // the other changes here, but a bounded one, and it is what whisper.cpp's own throughput-
+    // oriented examples do.
+    params.temperature_inc = 0.0f;
     // Checked periodically by whisper.cpp during inference so a Stop button actually interrupts a
     // running transcription instead of only taking effect once the whole file finishes.
     params.abort_callback = [](void *userData) {
