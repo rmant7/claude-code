@@ -82,6 +82,16 @@ jobs:
           path: WhisperTranscriber/app/build/outputs/apk/debug/whisper_debug_${{ github.run_number }}.apk
           if-no-files-found: error
 
+      - name: Delete previous APK assets from the release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=$(gh release view whisper-debug-latest --repo "${{ github.repository }}" --json assets --jq '.assets[].name' 2>/dev/null || true)
+          for asset in $assets; do
+            gh release delete-asset whisper-debug-latest "$asset" --repo "${{ github.repository }}" -y || true
+          done
+
       - name: Publish release with APK
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2

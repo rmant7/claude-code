@@ -53,7 +53,21 @@ model size and download it on demand from Hugging Face the first time you need i
      files in a couple of hours" use case this app targets. The safety net this time is
      [abort_callback](#stopping-a-running-batch) rather than avoiding parallelism altogether. `TranscriptionEndToEndTest`
      (see Testing below) exists to catch a hang like that before it ships again, and `TranscriberParallelismTest`
-     covers the chunk-count math on the JVM. The model is loaded **once** and reused across every file in a
+     covers the chunk-count math on the JVM.
+
+     A likely bigger factor, found by reading ggml's own CMake logic: with `GGML_NATIVE OFF` and no ARM arch set
+     explicitly, ggml appends **no** `-march` flags at all for the arm64-v8a build — it silently falls back to the
+     compiler's baseline `armv8-a`, without `dotprod`/`fp16`, which whisper.cpp's quantized matmul kernels (the
+     dominant cost of inference) lean on heavily. `app/src/main/cpp/CMakeLists.txt` now sets
+     `GGML_CPU_ARM_ARCH="armv8.2-a+dotprod+fp16"` — supported by essentially every Android device from ~2018
+     onward, and read only inside ggml's ARM-specific CMake branch, so it doesn't touch the x86_64 CI build.
+     **Caveat:** a device older than ~2017 (ARMv8.0, no dotprod) would crash with `SIGILL` running this build; the
+     upstream-intended fix for that (build several CPU variants and pick the right one at runtime via
+     `GGML_CPU_ALL_VARIANTS` + `GGML_BACKEND_DL`) needs restructuring to shared native libs and a runtime
+     backend-loading call, not attempted here. This is also the one piece of this whole performance story that CI
+     structurally *can't* verify — the emulator is x86_64, so this flag never executes there; real transcription
+     speed on real ARM hardware can only be confirmed by testing on-device.
+     The model is loaded **once** and reused across every file in a
      batch — this is also why files aren't transcribed several-at-once: each loaded whisper.cpp context holds the
      model weights in RAM (e.g. ~1.5 GB for Medium), so N files running fully in parallel would mean N full model
      loads, which would OOM on a typical phone for anything above Tiny/Base.
