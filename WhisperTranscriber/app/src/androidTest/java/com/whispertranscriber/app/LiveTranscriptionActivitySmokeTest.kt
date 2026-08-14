@@ -1,5 +1,6 @@
 package com.whispertranscriber.app
 
+import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import androidx.lifecycle.Lifecycle
@@ -41,6 +42,11 @@ class LiveTranscriptionActivitySmokeTest {
                 assertFalse(
                     "Copy should stay disabled with an empty transcript",
                     activity.findViewById<Button>(R.id.liveCopyButton).isEnabled
+                )
+                assertEquals(
+                    "Mic pipeline diagnostics should stay hidden before any dictation has run",
+                    View.GONE,
+                    activity.findViewById<TextView>(R.id.liveDebugText).visibility
                 )
             }
         }

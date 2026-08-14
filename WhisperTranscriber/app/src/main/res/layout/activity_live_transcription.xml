@@ -15,6 +15,17 @@
         android:textColor="#666666"
         android:textSize="13sp" />
 
+    <TextView
+        android:id="@+id/liveDebugText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="monospace"
+        android:gravity="center"
+        android:paddingBottom="8dp"
+        android:textColor="#999999"
+        android:textSize="10sp"
+        android:visibility="gone" />
+
     <ScrollView
         android:id="@+id/liveScroll"
         android:layout_width="match_parent"

@@ -53,7 +53,16 @@ class MicrophoneRecorder {
     fun read(): FloatArray? {
         val audioRecord = record ?: return null
         val shorts = ShortArray(READ_SAMPLES)
-        val count = audioRecord.read(shorts, 0, shorts.size)
+        // stop() can run concurrently on another thread (the Stop button posts to the service
+        // independently of this reader loop) and release() the same AudioRecord mid-call here; on
+        // some implementations that surfaces as an exception rather than an error return code, and
+        // an uncaught exception on this background thread would otherwise crash the whole process
+        // rather than just ending the read loop.
+        val count = try {
+            audioRecord.read(shorts, 0, shorts.size)
+        } catch (e: IllegalStateException) {
+            return null
+        }
         if (count <= 0) return if (count == 0) FloatArray(0) else null
         return FloatArray(count) { shorts[it] / 32768.0f }
     }

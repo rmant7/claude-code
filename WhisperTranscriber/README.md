@@ -165,6 +165,17 @@ recording produced no text at all with no error shown. `LiveTranscriptionState` 
 and in-progress text apart for exactly this reason: the partial half is replaced wholesale on every
 refresh, so merging them would make the tail of the transcript visibly rewrite itself.
 
+The threshold fix alone did not resolve a further "nothing happens" report, with no error surfaced
+either time — pointing at something upstream of the VAD decision, not confirmable without a device to
+test against. Rather than guess a third time, the screen now shows a live diagnostic line (block
+count, last block's energy, current noise floor, seconds buffered) whenever a dictation has run at
+least once, so the next report carries real numbers instead of another guess. Two related hardening
+fixes went in alongside it: `MicrophoneRecorder.read()` now survives an `IllegalStateException` if
+`stop()` releases the `AudioRecord` on another thread while a read is in flight (previously this could
+crash the reader coroutine, and by extension the process, instead of just ending the read loop), and
+every block now publishes state regardless of which branch handled it (previously an early return on
+the leading-silence path skipped that update entirely).
+
 ### Text models (in progress)
 
 **🧠 Text models** on the main screen browses `LlmModelCatalog.SEEDS` (Qwen, Gemma, DeepSeek, GLM),

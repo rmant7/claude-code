@@ -87,6 +87,18 @@ class LiveTranscriptionActivity : AppCompatActivity() {
                         else -> getString(R.string.live_idle)
                     }
 
+                    // What the mic pipeline is actually seeing right now — shown whenever a
+                    // dictation has started at least once, including after it stops, so a "nothing
+                    // happened" report comes with real numbers instead of a guess at the cause.
+                    binding.liveDebugText.visibility =
+                        if (status.isRecording || status.blocksReceived > 0) android.view.View.VISIBLE else android.view.View.GONE
+                    binding.liveDebugText.text = "blocks=%d energy=%.6f floor=%.6f buffered=%.1fs".format(
+                        status.blocksReceived,
+                        status.lastEnergy,
+                        status.noiseFloor,
+                        status.bufferedSamples / MicrophoneRecorder.SAMPLE_RATE.toFloat()
+                    )
+
                     val hasText = status.displayText.isNotBlank()
                     binding.liveCopyButton.isEnabled = hasText
                     binding.liveShareButton.isEnabled = hasText

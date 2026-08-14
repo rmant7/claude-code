@@ -20,7 +20,16 @@ object LiveTranscriptionState {
         val isLoadingModel: Boolean = false,
         val finalizedText: String = "",
         val partialText: String = "",
-        val error: String? = null
+        val error: String? = null,
+        // Surfaces what the mic pipeline is actually seeing in real time. Added after "nothing
+        // happens" reports that survived a first fix attempt (a mis-tuned voice-activity threshold)
+        // — with no visibility into the pipeline, every report of it not working was a guess at the
+        // cause rather than a measurement, and the first guess was wrong. This turns the next report
+        // into real numbers instead of another guess.
+        val blocksReceived: Int = 0,
+        val lastEnergy: Float = 0f,
+        val noiseFloor: Float = 0f,
+        val bufferedSamples: Int = 0
     ) {
         /** What to show as the whole transcript right now. */
         val displayText: String

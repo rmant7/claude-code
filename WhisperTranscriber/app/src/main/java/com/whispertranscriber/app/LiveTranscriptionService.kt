@@ -44,6 +44,7 @@ class LiveTranscriptionService : Service() {
     private var utterance = FloatArray(0)
     private var silentSamples = 0
     private var voicedSamples = 0
+    private var blocksReceived = 0
 
     // Running estimate of ambient noise, only updated on blocks judged silent (a raised voice
     // mid-utterance must not get folded into what counts as "quiet"). Starts high rather than 0 so
@@ -106,6 +107,7 @@ class LiveTranscriptionService : Service() {
         Transcriber(modelFile.absolutePath).use { transcriber ->
             LiveTranscriptionState.update { it.copy(isLoadingModel = false) }
             noiseFloor = 0.001f
+            blocksReceived = 0
             recorder.start()
 
             val reader = serviceScope.launch(Dispatchers.IO) {
@@ -181,6 +183,7 @@ class LiveTranscriptionService : Service() {
     private fun appendBlock(block: FloatArray) {
         val energy = MicrophoneRecorder.meanSquare(block)
         synchronized(bufferLock) {
+            blocksReceived++
             val voiced = MicrophoneRecorder.isVoiced(energy, noiseFloor)
 
             // Leading silence is skipped entirely: buffering it would push real speech out of the
@@ -188,23 +191,32 @@ class LiveTranscriptionService : Service() {
             // noise floor from blocks before any speech has started, not from pauses mid-sentence —
             // by then the room's actual ambient level is already known, and pulling the floor
             // toward whatever's happening now would make it drift.
-            if (!voiced) {
-                if (voicedSamples == 0) {
-                    noiseFloor += (energy - noiseFloor) * MicrophoneRecorder.NOISE_FLOOR_EMA_ALPHA
-                    return
+            val leadingSilence = !voiced && voicedSamples == 0
+            if (leadingSilence) {
+                noiseFloor += (energy - noiseFloor) * MicrophoneRecorder.NOISE_FLOOR_EMA_ALPHA
+            } else {
+                val grown = FloatArray(utterance.size + block.size)
+                utterance.copyInto(grown)
+                block.copyInto(grown, utterance.size)
+                utterance = grown
+
+                if (voiced) {
+                    silentSamples = 0
+                    voicedSamples += block.size
+                } else {
+                    silentSamples += block.size
                 }
             }
 
-            val grown = FloatArray(utterance.size + block.size)
-            utterance.copyInto(grown)
-            block.copyInto(grown, utterance.size)
-            utterance = grown
-
-            if (voiced) {
-                silentSamples = 0
-                voicedSamples += block.size
-            } else {
-                silentSamples += block.size
+            // Published on every block (roughly every 0.25s) regardless of which branch above ran,
+            // so a report of "nothing happens" comes with real numbers next time instead of a guess.
+            LiveTranscriptionState.update {
+                it.copy(
+                    blocksReceived = blocksReceived,
+                    lastEnergy = energy,
+                    noiseFloor = noiseFloor,
+                    bufferedSamples = utterance.size
+                )
             }
         }
     }
