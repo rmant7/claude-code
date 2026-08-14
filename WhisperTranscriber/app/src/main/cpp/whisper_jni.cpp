@@ -163,15 +163,15 @@ Java_com_whispertranscriber_app_WhisperLib_transcribe(JNIEnv *env, jclass /*claz
     params.language = lang;
     params.n_threads = numThreads > 0 ? numThreads : 4;
     params.no_context = true;
-    // Temperature fallback: by default, whenever a 30s window fails whisper's quality heuristics
-    // (entropy/logprob thresholds) it is decoded again at temperature 0.2, 0.4, ... 1.0 — up to six
-    // full decodes of the same audio. Noisy real-world recordings (phone calls especially) trip
-    // those thresholds constantly, so this is a large and completely invisible multiplier on
-    // transcription time. Setting the increment to 0 disables the retries: a window that fails is
-    // accepted as-is rather than re-decoded. This is a real quality tradeoff on hard audio, unlike
-    // the other changes here, but a bounded one, and it is what whisper.cpp's own throughput-
-    // oriented examples do.
-    params.temperature_inc = 0.0f;
+    // Temperature fallback is deliberately left at whisper's default (0.2). It was briefly set to 0
+    // to skip re-decoding windows that fail the entropy/logprob quality heuristics, on the theory
+    // that those retries were a pure speed tax. They are not: that fallback is precisely what
+    // rescues the decoder from repetition loops, where greedy sampling gets stuck emitting the same
+    // phrase over and over. Disabling it produced exactly that — a real transcript that degenerated
+    // into ~30 consecutive repeats of one phrase — because a looping window was now accepted as-is
+    // instead of being retried at a higher temperature. The retries only fire on windows that
+    // actually fail the checks, so clean audio pays nothing for this; the -O3 build fix (see
+    // cpp/CMakeLists.txt) is where the real speed came from, and it does not trade away quality.
     // Checked periodically by whisper.cpp during inference so a Stop button actually interrupts a
     // running transcription instead of only taking effect once the whole file finishes.
     params.abort_callback = [](void *userData) {

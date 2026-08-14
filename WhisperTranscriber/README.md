@@ -66,15 +66,18 @@ model size and download it on demand from Hugging Face the first time you need i
      debuggable/installable. The CMake `message()` there prints the effective setting into the CI build log, so
      this stays verifiable rather than assumed.
 
-     Two whisper.cpp-level settings matter almost as much (`whisper_jni.cpp`): `flash_attn` is enabled on the
-     context (a fused attention kernel that avoids materializing the full attention matrix — an exact
-     optimization, so no quality tradeoff), and `temperature_inc` is set to `0`. That second one disables
-     whisper's *temperature fallback*: by default a 30s window that fails its entropy/logprob quality heuristics
-     is re-decoded at temperature 0.2, 0.4, … 1.0, i.e. up to six full decodes of the same audio. Noisy
-     real-world recordings — phone calls especially — trip those thresholds constantly, making this a large and
-     completely invisible multiplier on transcription time. Unlike the others this *is* a real quality tradeoff
-     on hard audio (a failing window is accepted as-is instead of retried), but a bounded one, and it's what
-     whisper.cpp's own throughput-oriented examples do.
+     One whisper.cpp-level setting helps too (`whisper_jni.cpp`): `flash_attn` is enabled on the context — a
+     fused attention kernel that avoids materializing the full attention matrix. It computes the same result, so
+     there is no quality tradeoff.
+
+     **What not to do:** `temperature_inc` was briefly set to `0` here as an additional speed win, on the theory
+     that whisper's *temperature fallback* (re-decoding a window that fails its entropy/logprob heuristics at
+     temperature 0.2, 0.4, … 1.0) was a pure tax. It is not — that fallback is what breaks the decoder out of
+     **repetition loops**, where greedy sampling gets stuck emitting one phrase over and over. Disabling it
+     produced exactly that on a real recording: a transcript that degenerated into ~30 consecutive repeats of the
+     same phrase. It is back at whisper's default. The retries only fire on windows that actually fail the
+     checks, so clean audio pays nothing for them, and the `-O3` fix above is where the real speed came from
+     without trading anything away.
 
      A further factor, found by reading ggml's own CMake logic: with `GGML_NATIVE OFF` and no ARM arch set
      explicitly, ggml appends **no** `-march` flags at all for the arm64-v8a build — it silently falls back to the
